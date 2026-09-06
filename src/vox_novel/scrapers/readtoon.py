@@ -194,14 +194,23 @@ class ReadtoonScraper(BaseScraper):
                 )
                 page = await context.new_page()
 
-                # Set AuthToken in localStorage if available
+                # Set AuthToken in localStorage and cookies if available
                 auth_token = self.auth_token or os.getenv("READTOON_AUTH_TOKEN", "")
                 if auth_token:
                     try:
+                        await context.add_cookies([
+                            {"name": "token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
+                            {"name": "auth-token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
+                            {"name": "_$AuthToken", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
+                        ])
                         await page.goto("https://readtoon.com", wait_until="domcontentloaded", timeout=10000)
-                        await page.evaluate(f"localStorage.setItem('_$AuthToken', '{auth_token}');")
+                        await page.evaluate(f"""
+                            localStorage.setItem('_$AuthToken', '{auth_token}');
+                            localStorage.setItem('_$NETHER_TOKEN', '{auth_token}');
+                        """)
                     except Exception:
                         pass
+
 
                 # Navigate to chapter page
                 await page.goto(chapter_url, wait_until="domcontentloaded", timeout=25000)
