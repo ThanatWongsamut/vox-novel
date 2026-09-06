@@ -91,7 +91,7 @@
                             </td>
                             <td class="py-3 px-4">
                                 <div class="font-medium text-white">{{ ch.title }}</div>
-                                {% if is_trans %}
+                                {% if is_trans and translated_map[ch.id].title and translated_map[ch.id].title != ch.title %}
                                 <div class="text-green-400 text-[11px] mt-0.5">{{ translated_map[ch.id].title }}</div>
                                 {% endif %}
                             </td>

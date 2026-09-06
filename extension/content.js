@@ -35,35 +35,44 @@
       }
     }
 
-    // Try extracting from document title
-    // Example: "ตอนที่ 170 - My Possession Became a Ghost Story - ReadToon"
-    const docTitle = document.title || "";
-    const titleParts = docTitle.split("-").map((s) => s.trim());
-    if (titleParts.length >= 2) {
-      chapterTitle = titleParts[0];
-      seriesTitle = titleParts[1];
-    } else if (titleParts.length === 1) {
-      chapterTitle = titleParts[0];
+    // 1. Extract Series Title (h1 or breadcrumb or docTitle)
+    const h1 = document.querySelector("h1");
+    if (h1 && h1.textContent.trim()) {
+      seriesTitle = h1.textContent.trim();
     }
-
-    // Look for breadcrumbs or links to novel
     const breadcrumbSeriesLink = document.querySelector(`a[href="/content/${seriesId}"]`) ||
                                  document.querySelector(`a[href*="/content/${seriesId}"]`);
     if (breadcrumbSeriesLink && breadcrumbSeriesLink.textContent.trim()) {
       seriesTitle = breadcrumbSeriesLink.textContent.trim();
     }
 
-    // Look for heading
-    const h1 = document.querySelector("h1");
-    if (h1 && h1.textContent.trim()) {
-      const h1Text = h1.textContent.trim();
-      if (!chapterTitle || chapterTitle === docTitle) {
-        chapterTitle = h1Text;
+    // 2. Extract Chapter Title (from page DOM sub-heading or document.title)
+    // On ReadToon, the chapter title is in p.text-default-500: e.g. "ตอนที่ 170 - ฉันถูกเข้าใจผิดว่าเป็นผี0170"
+    const domChapEl = Array.from(document.querySelectorAll("p, span, h2, h3, div")).find((el) => {
+      const t = el.textContent.trim();
+      if (t.length > 100) return false;
+      if (chapterNo !== null && (t.startsWith(`ตอนที่ ${chapterNo}`) || t.startsWith(`ตอนที่${chapterNo}`))) {
+        return true;
+      }
+      return false;
+    });
+    if (domChapEl) {
+      chapterTitle = domChapEl.textContent.trim();
+    }
+
+    // Fallback: match from document.title
+    // Format on ReadToon: "Series Title - ตอนที่ 170 - Subtitle - ReadToon"
+    const docTitle = document.title || "";
+    if (!chapterTitle && docTitle) {
+      const m = docTitle.match(/(?:^|\s*-\s*)(ตอนที่\s*\d+.*?)(?:\s*-\s*ReadToon|$)/i);
+      if (m) {
+        chapterTitle = m[1].trim();
       }
     }
 
-    if (!chapterTitle && chapterNo !== null) {
-      chapterTitle = `ตอนที่ ${chapterNo}`;
+    // Ensure chapterTitle is not mistakenly the whole novel title
+    if (!chapterTitle || chapterTitle === seriesTitle) {
+      chapterTitle = chapterNo !== null ? `ตอนที่ ${chapterNo}` : "Chapter";
     }
 
     // Extract novel cover from meta or page

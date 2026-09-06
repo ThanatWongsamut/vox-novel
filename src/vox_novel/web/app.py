@@ -217,19 +217,35 @@ async def extension_import(req: ExtensionImportRequest):
     else:
         chap_id = str(uuid.uuid4())[:8]
 
-    # Chapter title
-    chap_title = (req.chapter_title or "").strip()
-    if not chap_title:
-        chap_title = (
-            f"ตอนที่ {int(chapter_no)}"
-            if chapter_no is not None and chapter_no.is_integer()
-            else (f"Chapter {chapter_no}" if chapter_no is not None else "Imported Chapter")
-        )
+    novel = storage.get_novel(series_id)
 
     # Series Title
     novel_title = (req.series_title or "").strip()
     if not novel_title:
-        novel_title = series_id.replace("-", " ").title()
+        novel_title = novel.title if novel and novel.title else series_id.replace("-", " ").title()
+
+    # Chapter title validation
+    chap_title = (req.chapter_title or "").strip()
+    is_invalid_title = (
+        not chap_title
+        or (req.series_title and chap_title.lower() == req.series_title.strip().lower())
+        or (novel and chap_title.lower() == novel.title.strip().lower())
+    )
+
+    if is_invalid_title:
+        # Retain existing title from catalog if already known
+        existing_ch = next(
+            (c for c in (novel.chapters if novel else []) if str(c.id) == str(chap_id) or c.chapter_number == chapter_no),
+            None,
+        )
+        if existing_ch and existing_ch.title and existing_ch.title != novel_title:
+            chap_title = existing_ch.title
+        else:
+            chap_title = (
+                f"ตอนที่ {int(chapter_no)}"
+                if chapter_no is not None and chapter_no.is_integer()
+                else (f"Chapter {chapter_no}" if chapter_no is not None else "Imported Chapter")
+            )
 
     is_th = req.source_language == "th"
 
@@ -274,6 +290,12 @@ async def extension_import(req: ExtensionImportRequest):
     if novel:
         existing_idx = next((i for i, c in enumerate(novel.chapters) if c.id == chapter.id), -1)
         if existing_idx >= 0:
+            if (
+                novel.chapters[existing_idx].title
+                and "ตอนที่" in novel.chapters[existing_idx].title
+                and len(novel.chapters[existing_idx].title) > len(chapter.title)
+            ):
+                summary_item.title = novel.chapters[existing_idx].title
             novel.chapters[existing_idx] = summary_item
         else:
             novel.chapters.append(summary_item)
