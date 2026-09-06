@@ -103,8 +103,26 @@
                 <p class="text-[10px] text-slate-500">Leave Remote URL blank to use local engine. Or point to a self-hosted vLLM-Omni / VoxCPM endpoint.</p>
             </div>
 
+            <!-- ReadToon Authentication -->
+            <div class="border-t border-slate-800 pt-3 space-y-2">
+                <div class="flex items-center justify-between">
+                    <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                        <i class="fa-solid fa-shield-halved text-amber-400"></i> ReadToon Auth Token / Cookie
+                    </label>
+                    <span class="text-[10px] text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Optional • For Paid Chapters</span>
+                </div>
+                <div class="relative flex items-center">
+                    <input type="password" id="setting-readtoon-token" placeholder="auth_token=eyJ... or _$AuthToken" class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    <button type="button" onclick="toggleKeyVisibility('setting-readtoon-token', 'readtoon-eye-icon')" class="absolute right-2 p-1.5 text-slate-400 hover:text-white text-xs">
+                        <i id="readtoon-eye-icon" class="fa-solid fa-eye"></i>
+                    </button>
+                </div>
+                <p class="text-[10px] text-slate-500">Paste your <code>auth_token</code> or full cURL cookie string to scrape purchased/locked chapters on ReadToon. (Free chapters 1–68 do not require any token).</p>
+            </div>
+
             <!-- Status banner -->
             <div id="settings-status-banner" class="hidden p-2.5 rounded-xl text-xs flex items-center gap-2"></div>
+
 
             <!-- Footer Buttons -->
             <div class="flex justify-end gap-2.5 pt-3 border-t border-slate-800">
@@ -154,6 +172,12 @@
                 if (voxcpmDeviceSelect && data.voxcpm_device) {
                     voxcpmDeviceSelect.value = data.voxcpm_device;
                 }
+
+                const readtoonTokenInput = document.getElementById('setting-readtoon-token');
+                if (readtoonTokenInput && data.readtoon_auth_token) {
+                    readtoonTokenInput.value = data.readtoon_auth_token;
+                }
+
 
                 // Handle model selection
                 let matched = false;
@@ -256,6 +280,7 @@
         try {
             const voxcpmUrlInput = document.getElementById('setting-voxcpm-url');
             const voxcpmDeviceSelect = document.getElementById('setting-voxcpm-device');
+            const readtoonTokenInput = document.getElementById('setting-readtoon-token');
 
             const resp = await fetch('/api/settings', {
                 method: 'POST',
@@ -266,8 +291,10 @@
                     gemini_api_key: geminiInput.value.trim(),
                     voxcpm_api_url: voxcpmUrlInput ? voxcpmUrlInput.value.trim() : "",
                     voxcpm_device: voxcpmDeviceSelect ? voxcpmDeviceSelect.value : "auto",
+                    readtoon_auth_token: readtoonTokenInput ? readtoonTokenInput.value.trim() : "",
                 })
             });
+
 
             const data = await resp.json();
             if (resp.ok) {

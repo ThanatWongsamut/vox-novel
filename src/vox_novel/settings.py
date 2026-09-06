@@ -36,6 +36,8 @@ def get_app_settings() -> Dict[str, Any]:
     model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
     voxcpm_url = os.getenv("VOXCPM_API_URL", "")
     voxcpm_device = os.getenv("VOXCPM_DEVICE", "auto")
+    readtoon_auth_token = os.getenv("READTOON_AUTH_TOKEN", "")
+    readtoon_device_token = os.getenv("READTOON_DEVICE_TOKEN", "")
 
     return {
         "openrouter_api_key": mask_key(openrouter_key),
@@ -45,6 +47,9 @@ def get_app_settings() -> Dict[str, Any]:
         "gemini_api_key_set": bool(gemini_key.strip()),
         "voxcpm_api_url": voxcpm_url,
         "voxcpm_device": voxcpm_device,
+        "readtoon_auth_token": mask_key(readtoon_auth_token) if readtoon_auth_token else "",
+        "readtoon_auth_token_set": bool(readtoon_auth_token.strip()),
+        "readtoon_device_token": mask_key(readtoon_device_token) if readtoon_device_token else "",
     }
 
 
@@ -81,6 +86,25 @@ def save_app_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         new_voxcpm_device = data.get("voxcpm_device", "auto").strip()
         updates["VOXCPM_DEVICE"] = new_voxcpm_device
         os.environ["VOXCPM_DEVICE"] = new_voxcpm_device
+
+    if "readtoon_auth_token" in data:
+        new_readtoon_token = data.get("readtoon_auth_token", "").strip()
+        if new_readtoon_token and "..." not in new_readtoon_token:
+            updates["READTOON_AUTH_TOKEN"] = new_readtoon_token
+            os.environ["READTOON_AUTH_TOKEN"] = new_readtoon_token
+        elif new_readtoon_token == "":
+            updates["READTOON_AUTH_TOKEN"] = ""
+            os.environ["READTOON_AUTH_TOKEN"] = ""
+
+    if "readtoon_device_token" in data:
+        new_device_token = data.get("readtoon_device_token", "").strip()
+        if new_device_token and "..." not in new_device_token:
+            updates["READTOON_DEVICE_TOKEN"] = new_device_token
+            os.environ["READTOON_DEVICE_TOKEN"] = new_device_token
+        elif new_device_token == "":
+            updates["READTOON_DEVICE_TOKEN"] = ""
+            os.environ["READTOON_DEVICE_TOKEN"] = ""
+
 
     # Update or append keys in .env
     updated_keys = set()
