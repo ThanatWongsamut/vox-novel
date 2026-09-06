@@ -684,20 +684,43 @@ def login_cmd(
 
             if logged_in_user:
                 nickname = logged_in_user.get("nickname") or logged_in_user.get("username") or "User"
-                coins = logged_in_user.get("coin", 0)
+                raw_coins = logged_in_user.get("coins") if logged_in_user.get("coins") is not None else (logged_in_user.get("coin") or 0)
+                try:
+                    c_val = float(raw_coins)
+                    coins_display = str(int(c_val)) if c_val.is_integer() else f"{c_val:.2f}"
+                except Exception:
+                    coins_display = str(raw_coins)
+
                 console.print(f"\n[bold green]🎉 Login successful![/bold green]")
                 console.print(f"Logged in as: [bold cyan]{nickname}[/bold cyan] (ID: {logged_in_user.get('id', '-')})")
-                if coins:
-                    console.print(f"Coin balance: [bold yellow]{coins}[/bold yellow] coins")
+                console.print(f"Coin balance: [bold yellow]{coins_display}[/bold yellow] coins")
                 console.print(f"[green]Session profile saved to: {profile_dir}[/green]")
                 console.print("[dim]VoxNovel will now automatically use this authenticated session for all future scrapes.[/dim]")
+
+                user_session = {
+                    "id": logged_in_user.get("id"),
+                    "nickname": nickname,
+                    "coins": coins_display,
+                }
+                session_file = profile_dir / "user_session.json"
+                try:
+                    import json
+                    session_file.write_text(json.dumps(user_session, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
 
                 try:
                     cookies = await context.cookies()
                     auth_c = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
+                    device_c = next((c["value"] for c in cookies if c["name"] == "device_token"), None)
+                    updates = {}
                     if auth_c:
+                        updates["readtoon_auth_token"] = auth_c
+                    if device_c:
+                        updates["readtoon_device_token"] = device_c
+                    if updates:
                         from vox_novel.settings import save_app_settings
-                        save_app_settings({"readtoon_auth_token": auth_c})
+                        save_app_settings(updates)
                 except Exception:
                     pass
             else:

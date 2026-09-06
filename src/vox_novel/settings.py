@@ -182,10 +182,28 @@ async def verify_openrouter_api_key(api_key: Optional[str] = None) -> Dict[str, 
 
 async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]:
     """Check whether the provided token or persistent profile is authenticated on ReadToon."""
+    import json
     from vox_novel.scrapers.readtoon import ReadtoonScraper
 
     profile_dir = ReadtoonScraper.get_profile_dir()
     profile_exists = profile_dir.exists() and any(profile_dir.iterdir())
+    session_file = profile_dir / "user_session.json"
+
+    # If profile has cached user info and caller didn't pass an explicit new token to test
+    if not token and profile_exists and session_file.exists():
+        try:
+            session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            name = session_data.get("nickname") or "ReadToon User"
+            coins = session_data.get("coins", "-")
+            return {
+                "valid": True,
+                "nickname": name,
+                "coins": coins,
+                "message": f"Authenticated as {name} ({coins} coins)",
+                "mode": "persistent",
+            }
+        except Exception:
+            pass
 
     key = (token or "").strip()
     if not key or "..." in key:
@@ -200,6 +218,9 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
                     cookies[k.strip()] = v.strip().strip("'\"")
         else:
             cookies["auth_token"] = key
+
+        if "device_token" not in cookies and os.getenv("READTOON_DEVICE_TOKEN"):
+            cookies["device_token"] = os.getenv("READTOON_DEVICE_TOKEN", "").strip()
 
         try:
             async with httpx.AsyncClient(
@@ -217,7 +238,12 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
                     data = resp.json().get("result", {}).get("data", {}).get("json", {})
                     if data and (data.get("id") or data.get("nickname") or data.get("username")):
                         name = data.get("nickname") or data.get("username")
-                        coins = data.get("coin", 0)
+                        raw_coins = data.get("coins") if data.get("coins") is not None else (data.get("coin") or 0)
+                        try:
+                            c_val = float(raw_coins)
+                            coins = str(int(c_val)) if c_val.is_integer() else f"{c_val:.2f}"
+                        except Exception:
+                            coins = str(raw_coins)
                         return {
                             "valid": True,
                             "nickname": name,
@@ -225,16 +251,31 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
                             "message": f"Authenticated as {name} ({coins} coins)",
                             "mode": "token",
                         }
-                elif resp.status_code == 401:
+                elif resp.status_code == 401 and token is not None:
                     return {
                         "valid": False,
                         "error": "Unauthenticated (กรุณาเข้าสู่ระบบ). ReadToon rejected this token because it is not an active logged-in user session.",
                         "mode": "token",
                     }
         except Exception as e:
-            return {"valid": False, "error": f"Connection error checking ReadToon: {str(e)}", "mode": "token"}
+            if token is not None:
+                return {"valid": False, "error": f"Connection error checking ReadToon: {str(e)}", "mode": "token"}
 
     if profile_exists:
+        if session_file.exists():
+            try:
+                session_data = json.loads(session_file.read_text(encoding="utf-8"))
+                name = session_data.get("nickname") or "ReadToon User"
+                coins = session_data.get("coins", "-")
+                return {
+                    "valid": True,
+                    "nickname": name,
+                    "coins": coins,
+                    "message": f"Authenticated as {name} ({coins} coins)",
+                    "mode": "persistent",
+                }
+            except Exception:
+                pass
         return {
             "valid": True,
             "nickname": "Saved Chrome Profile",

@@ -226,66 +226,57 @@ class ReadtoonScraper(BaseScraper):
 
                 page = context.pages[0] if context.pages else await context.new_page()
 
-                # Set AuthToken/cookies in context and localStorage if available
-                auth_token = (self.auth_token or os.getenv("READTOON_AUTH_TOKEN", "")).strip()
-                device_token = os.getenv("READTOON_DEVICE_TOKEN", "").strip()
-                cookie_str = os.getenv("READTOON_COOKIE", "").strip()
+                if not use_persistent:
+                    # Set AuthToken/cookies in context only if not using persistent profile
+                    auth_token = (self.auth_token or os.getenv("READTOON_AUTH_TOKEN", "")).strip()
+                    device_token = os.getenv("READTOON_DEVICE_TOKEN", "").strip()
+                    cookie_str = os.getenv("READTOON_COOKIE", "").strip()
 
-                cookies_to_add = []
-                # If a full cookie string is provided (e.g. from curl)
-                if ";" in auth_token or "=" in auth_token:
-                    cookie_str = auth_token
-                    auth_token = ""
+                    cookies_to_add = []
+                    # If a full cookie string is provided (e.g. from curl)
+                    if ";" in auth_token or "=" in auth_token:
+                        cookie_str = auth_token
+                        auth_token = ""
 
-                if cookie_str:
-                    for part in cookie_str.split(";"):
-                        part = part.strip()
-                        if "=" in part:
-                            c_name, c_val = part.split("=", 1)
-                            c_name = c_name.strip()
-                            c_val = c_val.strip().strip("'\"")
-                            cookies_to_add.append({
-                                "name": c_name,
-                                "value": c_val,
-                                "domain": ".readtoon.com",
-                                "path": "/",
-                            })
-                            if c_name == "auth_token":
-                                auth_token = c_val
+                    if cookie_str:
+                        for part in cookie_str.split(";"):
+                            part = part.strip()
+                            if "=" in part:
+                                c_name, c_val = part.split("=", 1)
+                                c_name = c_name.strip()
+                                c_val = c_val.strip().strip("'\"")
+                                cookies_to_add.append({
+                                    "name": c_name,
+                                    "value": c_val,
+                                    "domain": ".readtoon.com",
+                                    "path": "/",
+                                })
+                                if c_name == "auth_token":
+                                    auth_token = c_val
 
-                if auth_token:
-                    cookies_to_add.extend([
-                        {"name": "auth_token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
-                        {"name": "auth-token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
-                        {"name": "token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
-                        {"name": "_$AuthToken", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
-                    ])
+                    if auth_token:
+                        cookies_to_add.extend([
+                            {"name": "auth_token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
+                            {"name": "token", "value": auth_token, "domain": ".readtoon.com", "path": "/"},
+                        ])
 
-                if device_token:
-                    cookies_to_add.append(
-                        {"name": "device_token", "value": device_token, "domain": ".readtoon.com", "path": "/"}
-                    )
+                    if device_token:
+                        cookies_to_add.append(
+                            {"name": "device_token", "value": device_token, "domain": ".readtoon.com", "path": "/"}
+                        )
 
-                if cookies_to_add:
-                    try:
-                        # Deduplicate by cookie name
-                        seen_c = set()
-                        unique_cookies = []
-                        for c in cookies_to_add:
-                            if c["name"] not in seen_c:
-                                seen_c.add(c["name"])
-                                unique_cookies.append(c)
-                        await context.add_cookies(unique_cookies)
-
-                        if auth_token:
-                            await page.goto("https://readtoon.com", wait_until="domcontentloaded", timeout=10000)
-                            await page.evaluate(f"""
-                                localStorage.setItem('_$AuthToken', '{auth_token}');
-                                localStorage.setItem('_$NETHER_TOKEN', '{auth_token}');
-                                localStorage.setItem('auth_token', '{auth_token}');
-                            """)
-                    except Exception:
-                        pass
+                    if cookies_to_add:
+                        try:
+                            # Deduplicate by cookie name
+                            seen_c = set()
+                            unique_cookies = []
+                            for c in cookies_to_add:
+                                if c["name"] not in seen_c:
+                                    seen_c.add(c["name"])
+                                    unique_cookies.append(c)
+                            await context.add_cookies(unique_cookies)
+                        except Exception:
+                            pass
 
                 # Navigate to chapter page
                 await page.goto(chapter_url, wait_until="domcontentloaded", timeout=25000)
@@ -310,7 +301,9 @@ class ReadtoonScraper(BaseScraper):
 
                     # If user is logged in and purchase confirmation modal is open:
                     if is_confirm_purchase and not is_login_required and not is_insufficient_coins:
-                        confirm_btn = await page.query_selector("button:has-text('ยืนยันการซื้อ')")
+                        confirm_btn = await page.query_selector("button:has-text('ยืนยันการซื้อ'), button:has-text('ยืนยันการซื้อตอน')")
+                        if not confirm_btn:
+                            confirm_btn = await page.query_selector("button:has-text('ยืนยัน')")
                         if confirm_btn and auto_purchase:
                             await confirm_btn.click()
                             try:

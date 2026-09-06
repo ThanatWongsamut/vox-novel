@@ -19,6 +19,14 @@ class ReadtoonAuthManager:
         self._task: Optional[asyncio.Task] = None
         self._context = None
 
+        session_file = self.get_profile_dir() / "user_session.json"
+        if session_file.exists():
+            try:
+                import json
+                self.user = json.loads(session_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
     @classmethod
     def get_instance(cls) -> "ReadtoonAuthManager":
         if cls._instance is None:
@@ -32,6 +40,14 @@ class ReadtoonAuthManager:
 
     async def get_current_session(self) -> Dict[str, Any]:
         """Check if there is an active session right now."""
+        if self.user and self.user.get("nickname"):
+            return {
+                "valid": True,
+                "nickname": self.user.get("nickname"),
+                "coins": self.user.get("coins", "0"),
+                "message": f"Authenticated as {self.user.get('nickname')} ({self.user.get('coins')} coins)",
+                "mode": "persistent",
+            }
         from vox_novel.settings import verify_readtoon_session
         return await verify_readtoon_session()
 
@@ -138,23 +154,44 @@ class ReadtoonAuthManager:
 
                 if logged_in:
                     nickname = logged_in.get("nickname") or logged_in.get("username") or "User"
-                    coins = logged_in.get("coin", 0)
+                    raw_coins = logged_in.get("coins") if logged_in.get("coins") is not None else (logged_in.get("coin") or 0)
+                    try:
+                        c_val = float(raw_coins)
+                        coins_display = str(int(c_val)) if c_val.is_integer() else f"{c_val:.2f}"
+                    except Exception:
+                        coins_display = str(raw_coins)
+
                     self.user = {
                         "id": logged_in.get("id"),
                         "nickname": nickname,
-                        "coins": coins,
+                        "coins": coins_display,
                     }
                     self.status = "success"
-                    self.message = f"Successfully logged in as {nickname} ({coins} coins)!"
+                    self.message = f"Successfully logged in as {nickname} ({coins_display} coins)!"
+
+                    session_file = profile_dir / "user_session.json"
+                    try:
+                        import json
+                        session_file.write_text(json.dumps(self.user, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
 
                     try:
                         cookies = await context.cookies()
                         auth_c = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
+                        device_c = next((c["value"] for c in cookies if c["name"] == "device_token"), None)
+                        updates = {}
                         if auth_c:
+                            updates["readtoon_auth_token"] = auth_c
+                        if device_c:
+                            updates["readtoon_device_token"] = device_c
+                        if updates:
                             from vox_novel.settings import save_app_settings
-                            save_app_settings({"readtoon_auth_token": auth_c})
+                            save_app_settings(updates)
                     except Exception:
                         pass
+
+                    await asyncio.sleep(2)
                 else:
                     if self.status != "cancelled":
                         self.status = "error"

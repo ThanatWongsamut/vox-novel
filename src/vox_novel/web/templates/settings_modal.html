@@ -308,7 +308,13 @@
                 if (notLoggedCard) notLoggedCard.classList.add('hidden');
                 if (loggingCard) loggingCard.classList.add('hidden');
                 if (nameEl) nameEl.textContent = data.nickname || 'Authenticated Account';
-                if (coinsEl) coinsEl.textContent = (data.coins !== undefined) ? `Coin balance: ${data.coins} coins` : (data.message || 'Session Active');
+                if (coinsEl) {
+                    if (data.coins !== undefined && data.coins !== null && data.coins !== '') {
+                        coinsEl.textContent = `Coin balance: ${data.coins} coins`;
+                    } else {
+                        coinsEl.textContent = data.message || 'Session Active';
+                    }
+                }
             } else {
                 if (loggedCard) loggedCard.classList.add('hidden');
                 if (notLoggedCard) notLoggedCard.classList.remove('hidden');
@@ -345,7 +351,11 @@
     }
 
     async function pollReadtoonLoginStatus() {
+        const loggedCard = document.getElementById('readtoon-logged-in-card');
+        const notLoggedCard = document.getElementById('readtoon-not-logged-card');
         const loggingCard = document.getElementById('readtoon-logging-in-card');
+        const nameEl = document.getElementById('readtoon-user-name');
+        const coinsEl = document.getElementById('readtoon-user-coins');
         const progressMsg = document.getElementById('readtoon-login-progress-msg');
 
         try {
@@ -357,6 +367,13 @@
             } else if (data.status === 'success') {
                 if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
                 readtoonLoginPollInterval = null;
+                if (data.user) {
+                    if (loggedCard) loggedCard.classList.remove('hidden');
+                    if (notLoggedCard) notLoggedCard.classList.add('hidden');
+                    if (loggingCard) loggingCard.classList.add('hidden');
+                    if (nameEl) nameEl.textContent = data.user.nickname || 'Authenticated Account';
+                    if (coinsEl) coinsEl.textContent = `Coin balance: ${data.user.coins} coins`;
+                }
                 await refreshReadtoonSessionUI();
             } else if (data.status === 'error' || data.status === 'cancelled') {
                 if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
