@@ -857,3 +857,41 @@ async def verify_readtoon_endpoint(request: Request):
     return await verify_readtoon_session(token)
 
 
+@web_app.get("/api/readtoon/session")
+async def get_readtoon_session_endpoint():
+    """Check current ReadToon session status."""
+    from vox_novel.scrapers.readtoon_auth import ReadtoonAuthManager
+    return await ReadtoonAuthManager.get_instance().get_current_session()
+
+
+@web_app.post("/api/readtoon/login/start")
+async def start_readtoon_login_endpoint(request: Request):
+    """Start interactive Chrome login on the host machine."""
+    from vox_novel.scrapers.readtoon_auth import ReadtoonAuthManager
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    timeout = int(body.get("timeout", 300))
+    return await ReadtoonAuthManager.get_instance().start_browser_login(timeout=timeout)
+
+
+@web_app.get("/api/readtoon/login/status")
+async def get_readtoon_login_status_endpoint():
+    """Poll status of interactive Chrome login."""
+    from vox_novel.scrapers.readtoon_auth import ReadtoonAuthManager
+    return ReadtoonAuthManager.get_instance().get_status()
+
+
+@web_app.post("/api/readtoon/login/cancel")
+async def cancel_readtoon_login_endpoint():
+    """Cancel interactive Chrome login."""
+    from vox_novel.scrapers.readtoon_auth import ReadtoonAuthManager
+    return await ReadtoonAuthManager.get_instance().cancel_login()
+
+
+@web_app.post("/api/readtoon/logout")
+async def logout_readtoon_endpoint():
+    """Clear ReadToon persistent profile and saved token."""
+    from vox_novel.scrapers.readtoon_auth import ReadtoonAuthManager
+    return await ReadtoonAuthManager.get_instance().logout()
+
+
+

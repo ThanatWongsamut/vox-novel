@@ -104,34 +104,94 @@
             </div>
 
             <!-- ReadToon Authentication -->
-            <div class="border-t border-slate-800 pt-3 space-y-2">
+            <div class="border-t border-slate-800 pt-3 space-y-3">
                 <div class="flex items-center justify-between">
                     <label class="font-medium text-slate-300 flex items-center gap-1.5">
-                        <i class="fa-solid fa-shield-halved text-amber-400"></i> ReadToon Auth Token / Session
+                        <i class="fa-solid fa-shield-halved text-amber-400"></i> ReadToon Account & Paid Chapters
                     </label>
+                    <span class="text-[10px] text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Free chapters 1–68 need no login</span>
+                </div>
+
+                <!-- 1. Logged In Card -->
+                <div id="readtoon-logged-in-card" class="hidden p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-sm">
+                            <i class="fa-solid fa-user-check"></i>
+                        </div>
+                        <div>
+                            <div class="text-xs font-semibold text-white flex items-center gap-1.5">
+                                <span id="readtoon-user-name">Authenticated Account</span>
+                                <span class="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">Active</span>
+                            </div>
+                            <div class="text-[10px] text-emerald-400/90" id="readtoon-user-coins">Coin balance: -</div>
+                        </div>
+                    </div>
                     <div class="flex items-center gap-2">
-                        <button type="button" onclick="testReadtoonSession()" class="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs rounded-lg transition border border-amber-500/30 flex items-center gap-1">
-                            <i class="fa-solid fa-vial"></i> Test Session
+                        <button type="button" onclick="startReadtoonBrowserLogin()" class="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition border border-slate-700 flex items-center gap-1">
+                            <i class="fa-brands fa-chrome text-xs"></i> Re-login
                         </button>
-                        <span class="text-[10px] text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Optional • For Paid Chapters</span>
+                        <button type="button" onclick="logoutReadtoonSession()" class="px-2.5 py-1 text-[11px] bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition border border-rose-500/20">
+                            Log Out
+                        </button>
                     </div>
                 </div>
-                <div class="relative flex items-center">
-                    <input type="password" id="setting-readtoon-token" placeholder="auth_token=eyJ... or full cURL cookie" class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
-                    <button type="button" onclick="toggleKeyVisibility('setting-readtoon-token', 'readtoon-eye-icon')" class="absolute right-2 p-1.5 text-slate-400 hover:text-white text-xs">
-                        <i id="readtoon-eye-icon" class="fa-solid fa-eye"></i>
+
+                <!-- 2. Not Logged In Card / Quick Browser Login -->
+                <div id="readtoon-not-logged-card" class="p-3 bg-slate-900/80 border border-slate-700 rounded-xl flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-400 flex items-center justify-center text-sm">
+                            <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                        </div>
+                        <div>
+                            <div class="text-xs font-semibold text-slate-200">Not Logged In</div>
+                            <div class="text-[10px] text-slate-400">Log into your ReadToon account to read paid chapters.</div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="startReadtoonBrowserLogin()" class="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/15 transition">
+                        <i class="fa-brands fa-chrome"></i> Log In via Browser
                     </button>
                 </div>
-                <div id="readtoon-test-status" class="hidden text-[11px] mt-1"></div>
 
-                <div class="flex items-center gap-2 pt-1">
+                <!-- 3. Logging In Progress Card -->
+                <div id="readtoon-logging-in-card" class="hidden p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-amber-300 flex items-center gap-2 font-medium">
+                            <i class="fa-solid fa-spinner animate-spin text-amber-400"></i>
+                            <span id="readtoon-login-progress-msg">Chrome opened. Waiting for login...</span>
+                        </span>
+                        <button type="button" onclick="cancelReadtoonBrowserLogin()" class="text-[10px] text-slate-400 hover:text-white px-2 py-1 bg-slate-800 rounded">Cancel</button>
+                    </div>
+                    <p class="text-[10px] text-slate-400">Google Chrome has opened on your Mac. Please log into your account in that window.</p>
+                </div>
+
+                <!-- Auto-purchase checkbox -->
+                <div class="flex items-center gap-2 pt-0.5">
                     <input type="checkbox" id="setting-readtoon-auto-purchase" class="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-amber-500">
                     <label for="setting-readtoon-auto-purchase" class="text-xs text-slate-300 cursor-pointer select-none">
-                        Automatically unlock paid chapters using coin balance (<code class="text-amber-400 font-mono">1.20 coins</code> per chapter)
+                        Automatically unlock paid chapters using coin balance (<code class="text-amber-400 font-mono">1.20 coins</code> / chapter)
                     </label>
                 </div>
 
-                <p class="text-[10px] text-slate-500">💡 <b>Recommended:</b> Run <code class="text-amber-400 font-mono bg-slate-800 px-1 py-0.5 rounded">vox-novel login readtoon</code> in your terminal to log in via Chrome once. Free chapters 1–68 require no token.</p>
+                <!-- Manual Token input (collapsible) -->
+                <details class="text-xs text-slate-400 group pt-1">
+                    <summary class="cursor-pointer text-[11px] text-slate-400 hover:text-slate-200 select-none flex items-center gap-1.5">
+                        <i class="fa-solid fa-chevron-right text-[9px] group-open:rotate-90 transition-transform"></i> Or configure manual token / cookie
+                    </summary>
+                    <div class="mt-2 space-y-2 pl-3 border-l-2 border-slate-800">
+                        <div class="relative flex items-center">
+                            <input type="password" id="setting-readtoon-token" placeholder="auth_token=eyJ... or full cURL cookie" class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-20 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                            <div class="absolute right-1 flex items-center gap-1">
+                                <button type="button" onclick="toggleKeyVisibility('setting-readtoon-token', 'readtoon-eye-icon')" class="p-1 text-slate-400 hover:text-white text-xs">
+                                    <i id="readtoon-eye-icon" class="fa-solid fa-eye"></i>
+                                </button>
+                                <button type="button" onclick="testReadtoonSession()" class="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[10px] rounded transition border border-amber-500/30">
+                                    Test
+                                </button>
+                            </div>
+                        </div>
+                        <div id="readtoon-test-status" class="hidden text-[11px]"></div>
+                    </div>
+                </details>
             </div>
 
             <!-- Status banner -->
@@ -219,11 +279,119 @@
             console.error("Failed to load settings", e);
         }
 
+        await refreshReadtoonSessionUI();
         modal.classList.remove('hidden');
     }
 
     function closeSettingsModal() {
+        if (readtoonLoginPollInterval) {
+            clearInterval(readtoonLoginPollInterval);
+            readtoonLoginPollInterval = null;
+        }
         document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    let readtoonLoginPollInterval = null;
+
+    async function refreshReadtoonSessionUI() {
+        const loggedCard = document.getElementById('readtoon-logged-in-card');
+        const notLoggedCard = document.getElementById('readtoon-not-logged-card');
+        const loggingCard = document.getElementById('readtoon-logging-in-card');
+        const nameEl = document.getElementById('readtoon-user-name');
+        const coinsEl = document.getElementById('readtoon-user-coins');
+
+        try {
+            const resp = await fetch('/api/readtoon/session');
+            const data = await resp.json();
+            if (data.valid) {
+                if (loggedCard) loggedCard.classList.remove('hidden');
+                if (notLoggedCard) notLoggedCard.classList.add('hidden');
+                if (loggingCard) loggingCard.classList.add('hidden');
+                if (nameEl) nameEl.textContent = data.nickname || 'Authenticated Account';
+                if (coinsEl) coinsEl.textContent = (data.coins !== undefined) ? `Coin balance: ${data.coins} coins` : (data.message || 'Session Active');
+            } else {
+                if (loggedCard) loggedCard.classList.add('hidden');
+                if (notLoggedCard) notLoggedCard.classList.remove('hidden');
+                if (loggingCard) loggingCard.classList.add('hidden');
+            }
+        } catch (e) {
+            console.error("Failed to check ReadToon session", e);
+        }
+    }
+
+    async function startReadtoonBrowserLogin() {
+        const loggedCard = document.getElementById('readtoon-logged-in-card');
+        const notLoggedCard = document.getElementById('readtoon-not-logged-card');
+        const loggingCard = document.getElementById('readtoon-logging-in-card');
+        const progressMsg = document.getElementById('readtoon-login-progress-msg');
+
+        if (loggedCard) loggedCard.classList.add('hidden');
+        if (notLoggedCard) notLoggedCard.classList.add('hidden');
+        if (loggingCard) loggingCard.classList.remove('hidden');
+        if (progressMsg) progressMsg.textContent = 'Launching Google Chrome on your screen...';
+
+        try {
+            const resp = await fetch('/api/readtoon/login/start', { method: 'POST' });
+            const data = await resp.json();
+            if (progressMsg && data.message) {
+                progressMsg.textContent = data.message;
+            }
+
+            if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
+            readtoonLoginPollInterval = setInterval(pollReadtoonLoginStatus, 1500);
+        } catch (e) {
+            if (progressMsg) progressMsg.textContent = 'Error starting browser login: ' + e.message;
+        }
+    }
+
+    async function pollReadtoonLoginStatus() {
+        const loggingCard = document.getElementById('readtoon-logging-in-card');
+        const progressMsg = document.getElementById('readtoon-login-progress-msg');
+
+        try {
+            const resp = await fetch('/api/readtoon/login/status');
+            const data = await resp.json();
+
+            if (data.status === 'running') {
+                if (progressMsg && data.message) progressMsg.textContent = data.message;
+            } else if (data.status === 'success') {
+                if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
+                readtoonLoginPollInterval = null;
+                await refreshReadtoonSessionUI();
+            } else if (data.status === 'error' || data.status === 'cancelled') {
+                if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
+                readtoonLoginPollInterval = null;
+                if (progressMsg) progressMsg.textContent = data.message || 'Login failed or was cancelled.';
+                setTimeout(() => {
+                    refreshReadtoonSessionUI();
+                }, 2500);
+            }
+        } catch (e) {
+            console.error("Poll login status error", e);
+        }
+    }
+
+    async function cancelReadtoonBrowserLogin() {
+        if (readtoonLoginPollInterval) clearInterval(readtoonLoginPollInterval);
+        readtoonLoginPollInterval = null;
+        try {
+            await fetch('/api/readtoon/login/cancel', { method: 'POST' });
+        } catch (e) {}
+        await refreshReadtoonSessionUI();
+    }
+
+    async function logoutReadtoonSession() {
+        if (!confirm('Are you sure you want to log out of ReadToon and clear your saved session?')) {
+            return;
+        }
+        try {
+            await fetch('/api/readtoon/logout', { method: 'POST' });
+            const tokenInput = document.getElementById('setting-readtoon-token');
+            if (tokenInput) tokenInput.value = '';
+            await refreshReadtoonSessionUI();
+        } catch (e) {
+            alert('Logout error: ' + e.message);
+        }
     }
 
     function toggleKeyVisibility(inputId, iconId) {
