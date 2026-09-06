@@ -230,6 +230,12 @@ class StorageManager:
         if legacy_md.exists():
             legacy_md.unlink()
 
+        if chapter.chapter_number is not None and chapter.chapter_number.is_integer():
+            num_tag = f"ch_{int(chapter.chapter_number):04d}"
+            for old_f in chapters_dir.glob(f"{num_tag} - *"):
+                if old_f.name not in (f"{prefix}.json", f"{prefix}.md"):
+                    old_f.unlink(missing_ok=True)
+
         json_file = chapters_dir / f"{prefix}.json"
         with open(json_file, "w", encoding="utf-8") as f:
             f.write(chapter.model_dump_json(indent=2))

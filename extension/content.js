@@ -82,7 +82,7 @@
       coverUrl = ogImage.content;
     }
 
-    // Extract prose content
+    // Extract prose content (matching readtoon.py scraper logic)
     const proseEl = document.querySelector("div.prose.mx-auto") ||
                     document.querySelector("div.prose") ||
                     document.querySelector("article") ||
@@ -90,21 +90,15 @@
 
     let paragraphs = [];
     if (proseEl) {
-      const pTags = Array.from(proseEl.querySelectorAll("p"));
-      if (pTags.length > 0) {
-        paragraphs = pTags
-          .map((p) => p.innerText.trim())
-          .filter((t) => t.length > 0);
-      }
-
-      // If no <p> tags found or single long block, parse line breaks
-      if (paragraphs.length === 0) {
-        const inner = proseEl.innerText || "";
-        paragraphs = inner
-          .split(/\n+/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-      }
+      // Clone element to cleanly convert <br> and <p> into consistent paragraphs
+      const clone = proseEl.cloneNode(true);
+      clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+      clone.querySelectorAll("p").forEach((p) => p.insertAdjacentText("afterend", "\n\n"));
+      const rawText = clone.textContent || clone.innerText || "";
+      paragraphs = rawText
+        .split(/\n+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
     }
 
     return {

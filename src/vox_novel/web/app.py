@@ -224,28 +224,27 @@ async def extension_import(req: ExtensionImportRequest):
     if not novel_title:
         novel_title = novel.title if novel and novel.title else series_id.replace("-", " ").title()
 
-    # Chapter title validation
+    # Resolve chapter title canonically matching catalog
     chap_title = (req.chapter_title or "").strip()
-    is_invalid_title = (
-        not chap_title
-        or (req.series_title and chap_title.lower() == req.series_title.strip().lower())
-        or (novel and chap_title.lower() == novel.title.strip().lower())
+    existing_ch = next(
+        (c for c in (novel.chapters if novel else []) if str(c.id) == str(chap_id) or c.chapter_number == chapter_no),
+        None,
     )
 
-    if is_invalid_title:
-        # Retain existing title from catalog if already known
-        existing_ch = next(
-            (c for c in (novel.chapters if novel else []) if str(c.id) == str(chap_id) or c.chapter_number == chapter_no),
-            None,
-        )
-        if existing_ch and existing_ch.title and existing_ch.title != novel_title:
-            chap_title = existing_ch.title
-        else:
+    if existing_ch and existing_ch.title and existing_ch.title != novel_title:
+        # Use canonical catalog title (e.g. "ตอนที่ 170: ฉันถูกเข้าใจผิดว่าเป็นผี0170")
+        chap_title = existing_ch.title
+    else:
+        # Fallback or normalize format: replace "ตอนที่ X - " with "ตอนที่ X: "
+        if not chap_title or chap_title.lower() == novel_title.lower():
             chap_title = (
                 f"ตอนที่ {int(chapter_no)}"
                 if chapter_no is not None and chapter_no.is_integer()
                 else (f"Chapter {chapter_no}" if chapter_no is not None else "Imported Chapter")
             )
+        elif chapter_no is not None:
+            c_int = int(chapter_no) if chapter_no.is_integer() else chapter_no
+            chap_title = re.sub(rf"^ตอนที่\s*{c_int}\s*[-–—]\s*", f"ตอนที่ {c_int}: ", chap_title)
 
     is_th = req.source_language == "th"
 
@@ -255,10 +254,9 @@ async def extension_import(req: ExtensionImportRequest):
             index=i,
             text=p_text,
             translated_text=p_text if is_th else None,
-            speaker="narrator",
-            speech_type="narration",
+            speech_type="dialogue" if any(p_text.startswith(q) for q in ('"', "“", "「", "『")) else "narration",
         )
-        for i, p_text in enumerate(cleaned_paragraphs)
+        for i, p_text in enumerate(cleaned_paragraphs, 1)
     ]
 
     chapter = Chapter(
@@ -271,7 +269,7 @@ async def extension_import(req: ExtensionImportRequest):
         translated_title=chap_title if is_th else None,
         source_language=req.source_language,
         target_language="th" if is_th else None,
-        metadata={"source": req.source, "imported_via": "chrome-extension"},
+        metadata={"source": req.source},
     )
 
     storage.save_chapter(chapter, as_markdown=True)
