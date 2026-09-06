@@ -1,10 +1,16 @@
 import asyncio
 import json
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
-from fastapi import FastAPI, Form, HTTPException, Request
+import numpy as np
+import soundfile as sf
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -72,6 +78,26 @@ async def get_test_voice(num: int):
     if not p.exists():
         raise HTTPException(status_code=404, detail="Test voice not found")
     return FileResponse(p, media_type="audio/wav", headers={"Accept-Ranges": "bytes"})
+
+
+@web_app.api_route("/api/voices/{series_id}/narrator", methods=["GET", "HEAD"])
+async def get_narrator_voice(series_id: str):
+    """Serve the master narrator reference audio anchor."""
+    p = storage.get_narrator_voice_file(series_id)
+    if not p or not p.exists():
+        raise HTTPException(status_code=404, detail="Narrator reference voice not found")
+    media_type = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
+    return FileResponse(p, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+
+
+@web_app.api_route("/api/voices/{series_id}/character/{character_name}", methods=["GET", "HEAD"])
+async def get_character_voice(series_id: str, character_name: str):
+    """Serve character-specific reference voice anchor."""
+    p = storage.get_character_voice_file(series_id, character_name)
+    if not p or not p.exists():
+        raise HTTPException(status_code=404, detail=f"Voice not found for character '{character_name}'")
+    media_type = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
+    return FileResponse(p, media_type=media_type, headers={"Accept-Ranges": "bytes"})
 
 
 @web_app.get("/explore", response_class=HTMLResponse)
@@ -466,10 +492,27 @@ async def synthesize_chapter_endpoint(
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
 async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    narrator_voice_file = storage.get_narrator_voice_file(series_id)
+    has_narrator_ref = narrator_voice_file is not None and narrator_voice_file.exists()
+
+    # Map character voice status for template rendering
+    char_voice_status = {}
+    for key, char in knowledge.characters.items():
+        c_file = storage.get_character_voice_file(series_id, char.name_en)
+        char_voice_status[key] = {
+            "has_ref": c_file is not None and c_file.exists(),
+            "has_desc": bool(char.voice_description),
+            "ref_path": str(c_file) if c_file else None,
+        }
+
     return templates.TemplateResponse(
         request=request,
         name="glossary.html",
-        context={"knowledge": knowledge},
+        context={
+            "knowledge": knowledge,
+            "has_narrator_ref": has_narrator_ref,
+            "char_voice_status": char_voice_status,
+        },
     )
 
 
@@ -507,6 +550,7 @@ async def update_glossary_item(request: Request):
     role_or_cat = body.get("role_or_category", "")
     notes = body.get("notes")
     aliases = body.get("aliases", [])
+    voice_description = body.get("voice_description")
 
     if not series_id or not old_key or not new_name or not new_target:
         raise HTTPException(status_code=400, detail="Missing required fields")
@@ -514,6 +558,10 @@ async def update_glossary_item(request: Request):
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
 
     if item_type == "character":
+        existing_char = knowledge.find_character(old_key)
+        v_ref = existing_char.voice_ref_audio if existing_char else None
+        v_desc = voice_description if voice_description is not None else (existing_char.voice_description if existing_char else None)
+
         # Remove old if name changed
         if old_key.strip().lower() != new_name.strip().lower():
             knowledge.remove_character(old_key)
@@ -524,6 +572,8 @@ async def update_glossary_item(request: Request):
             role=role_or_cat or None,
             aliases=aliases,
             notes=notes or None,
+            voice_description=v_desc,
+            voice_ref_audio=v_ref,
         )
     else:
         # Term
@@ -562,6 +612,200 @@ async def delete_glossary_item(request: Request):
 
     knowledge_mgr.save(knowledge)
     return {"status": "ok", "message": "Deleted successfully"}
+
+
+@web_app.post("/api/voices/update-prompt")
+async def update_voice_prompt(request: Request):
+    """Update Voice Design prompt description for narrator or character."""
+    body = await request.json()
+    series_id = body.get("series_id")
+    target_lang = body.get("target_lang", "th")
+    voice_type = body.get("voice_type")  # "narrator" or "character"
+    character_name = body.get("character_name")
+    voice_description = body.get("voice_description", "").strip()
+
+    if not series_id or not voice_type:
+        raise HTTPException(status_code=400, detail="Missing required parameters")
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    if voice_type == "narrator":
+        knowledge.update_narrator_voice(voice_description=voice_description)
+    elif voice_type == "character":
+        if not character_name:
+            raise HTTPException(status_code=400, detail="character_name is required for character voice")
+        knowledge.update_character_voice(character_name, voice_description=voice_description)
+
+    knowledge_mgr.save(knowledge)
+    return {"status": "ok", "message": "Voice prompt updated successfully"}
+
+
+@web_app.post("/api/voices/generate")
+async def generate_voice_sample(request: Request):
+    """Generate reference voice sample from prompt using VoxCPM2."""
+    from vox_novel.tts.voxcpm import VoxCPM2TTS
+
+    body = await request.json()
+    series_id = body.get("series_id")
+    target_lang = body.get("target_lang", "th")
+    voice_type = body.get("voice_type")  # "narrator" or "character"
+    character_name = body.get("character_name")
+    voice_description = body.get("voice_description", "").strip()
+    sample_text = body.get("sample_text", "").strip()
+
+    if not series_id or not voice_type:
+        raise HTTPException(status_code=400, detail="Missing series_id or voice_type")
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    voices_dir = storage.get_voices_dir(series_id)
+
+    tts = VoxCPM2TTS()
+
+    if voice_type == "narrator":
+        effective_desc = (
+            voice_description
+            or knowledge.narrator_voice_description
+            or "เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
+        )
+        text = sample_text or "ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย"
+        out_file = voices_dir / "narrator_ref.wav"
+        await tts.synthesize(
+            text=text,
+            output_file=out_file,
+            voice_description=effective_desc,
+            reference_audio=None,
+        )
+        knowledge.update_narrator_voice(
+            voice_description=effective_desc,
+            voice_ref_audio=str(out_file),
+        )
+        knowledge_mgr.save(knowledge)
+        return {
+            "status": "ok",
+            "audio_url": f"/api/voices/{series_id}/narrator",
+            "voice_description": effective_desc,
+        }
+    else:
+        if not character_name:
+            raise HTTPException(status_code=400, detail="character_name is required")
+        char = knowledge.find_character(character_name)
+        if not char:
+            raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+        is_female = (char.gender or "").lower() in ("female", "f", "หญิง")
+        default_char_desc = (
+            "หญิงสาววัยรุ่น เสียงหวานใส ร่าเริง อ่อนหวาน น่าฟัง"
+            if is_female
+            else "ชายหนุ่มวัย 20 เสียงห้าว มั่นใจ ชัดเจน เป็นมิตร"
+        )
+        effective_desc = voice_description or char.voice_description or default_char_desc
+        text = sample_text or f"สวัสดี ข้าชื่อ{char.name_target} ยินดีที่ได้รู้จัก"
+        safe_key = re.sub(r"[\s\-_]+", "_", char.name_en.strip().lower())
+        out_file = voices_dir / f"{safe_key}_ref.wav"
+        await tts.synthesize(
+            text=text,
+            output_file=out_file,
+            voice_description=effective_desc,
+            reference_audio=None,
+        )
+        knowledge.update_character_voice(
+            char.name_en,
+            voice_description=effective_desc,
+            voice_ref_audio=str(out_file),
+        )
+        knowledge_mgr.save(knowledge)
+        return {
+            "status": "ok",
+            "audio_url": f"/api/voices/{series_id}/character/{char.name_en}",
+            "voice_description": effective_desc,
+        }
+
+
+@web_app.post("/api/voices/upload")
+async def upload_voice_sample(
+    file: UploadFile = File(...),
+    series_id: str = Form(...),
+    target_lang: str = Form("th"),
+    voice_type: str = Form(...),
+    character_name: Optional[str] = Form(None),
+):
+    """Upload custom reference audio file (.wav, .mp3, etc.) for narrator or character."""
+    voices_dir = storage.get_voices_dir(series_id)
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in [".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac"]:
+        raise HTTPException(status_code=400, detail="Supported audio formats: .wav, .mp3, .m4a, .ogg, .flac")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp_path = Path(tmp.name)
+        shutil.copyfileobj(file.file, tmp)
+
+    if voice_type == "narrator":
+        out_file = voices_dir / "narrator_ref.wav"
+        audio_url = f"/api/voices/{series_id}/narrator"
+    else:
+        if not character_name:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="character_name is required")
+        char = knowledge.find_character(character_name)
+        if not char:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+        safe_key = re.sub(r"[\s\-_]+", "_", char.name_en.strip().lower())
+        out_file = voices_dir / f"{safe_key}_ref.wav"
+        audio_url = f"/api/voices/{series_id}/character/{char.name_en}"
+
+    try:
+        # Convert and normalize to 48kHz mono WAV (max 15s for voice clone reference)
+        cmd = [
+            "ffmpeg", "-y", "-i", str(tmp_path),
+            "-t", "15",
+            "-ar", "48000",
+            "-ac", "1",
+            str(out_file)
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0 or not out_file.exists():
+            # Fallback to soundfile reading
+            data, sr = sf.read(str(tmp_path))
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            sf.write(str(out_file), data.astype(np.float32), sr)
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process audio file: {e}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if voice_type == "narrator":
+        knowledge.update_narrator_voice(voice_ref_audio=str(out_file))
+    else:
+        knowledge.update_character_voice(character_name, voice_ref_audio=str(out_file))
+    knowledge_mgr.save(knowledge)
+
+    return {"status": "ok", "audio_url": audio_url}
+
+
+@web_app.post("/api/voices/delete")
+async def delete_voice_sample(request: Request):
+    """Delete reference audio anchor, reverting to prompt-to-voice or narrator fallback."""
+    body = await request.json()
+    series_id = body.get("series_id")
+    target_lang = body.get("target_lang", "th")
+    voice_type = body.get("voice_type")
+    character_name = body.get("character_name")
+
+    if not series_id or not voice_type:
+        raise HTTPException(status_code=400, detail="Missing required parameters")
+
+    storage.delete_voice_file(series_id, voice_type, character_name)
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    if voice_type == "narrator":
+        knowledge.update_narrator_voice(voice_ref_audio="")
+    elif character_name:
+        knowledge.update_character_voice(character_name, voice_ref_audio="")
+    knowledge_mgr.save(knowledge)
+    return {"status": "ok"}
 
 
 @web_app.get("/api/settings")

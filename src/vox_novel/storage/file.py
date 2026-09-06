@@ -112,6 +112,40 @@ class StorageManager:
         voices_dir.mkdir(parents=True, exist_ok=True)
         return voices_dir
 
+    def get_narrator_voice_file(self, series_id: str) -> Optional[Path]:
+        voices_dir = self.get_voices_dir(series_id)
+        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+            p = voices_dir / f"narrator_ref{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        return None
+
+    def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
+        voices_dir = self.get_voices_dir(series_id)
+        safe_key = re.sub(r"[\s\-_]+", "_", character_name.strip().lower())
+        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+            p = voices_dir / f"{safe_key}_ref{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        for f in voices_dir.glob(f"*{safe_key}*"):
+            if f.is_file() and f.stat().st_size > 0 and f.suffix.lower() in [".wav", ".mp3", ".m4a", ".flac"]:
+                return f
+        return None
+
+    def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
+        voices_dir = self.get_voices_dir(series_id)
+        if voice_type == "narrator":
+            target = self.get_narrator_voice_file(series_id)
+            if target and target.exists():
+                target.unlink()
+                return True
+        elif character_name:
+            target = self.get_character_voice_file(series_id, character_name)
+            if target and target.exists():
+                target.unlink()
+                return True
+        return False
+
     def get_chapter(self, series_id: str, chapter_id: str) -> Optional[Chapter]:
         chapters_dir = self.base_dir / series_id / "chapters"
         if not chapters_dir.exists():

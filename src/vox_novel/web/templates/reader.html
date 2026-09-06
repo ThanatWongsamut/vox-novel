@@ -70,6 +70,9 @@
                             </div>
                         </div>
                         <div class="flex items-center gap-2">
+                            <a href="/series/{{ chapter.book_id }}/glossary?tab=voices" target="_blank" title="Manage Voice Anchors in Voice Studio" class="text-slate-400 hover:text-pink-400 p-1.5 rounded-lg hover:bg-slate-800 transition text-xs flex items-center gap-1">
+                                <i class="fa-solid fa-microphone-lines text-pink-400"></i>
+                            </a>
                             <select id="audio-speed" onchange="changeAudioSpeed(this.value)" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-300 focus:outline-none">
                                 <option value="0.75">0.75x</option>
                                 <option value="1.0" selected>1.0x</option>
@@ -113,9 +116,14 @@
                         </h4>
                         <p class="text-[11px] text-slate-400">Synthesize chapter text into natural Thai speech using Prompt-to-Voice design.</p>
                     </div>
-                    <button onclick="startAudioSynthesis()" id="generate-audio-btn" class="px-5 py-2.5 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-pink-600/25 flex items-center gap-2 shrink-0">
-                        <i class="fa-solid fa-headphones"></i> Generate Audiobook
-                    </button>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <a href="/series/{{ chapter.book_id }}/glossary?tab=voices" target="_blank" class="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium rounded-xl transition flex items-center gap-1.5 shadow-sm">
+                            <i class="fa-solid fa-microphone-lines text-pink-400"></i> Voice Studio
+                        </a>
+                        <button onclick="startAudioSynthesis()" id="generate-audio-btn" class="px-5 py-2.5 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-pink-600/25 flex items-center gap-2 shrink-0">
+                            <i class="fa-solid fa-headphones"></i> Generate Audiobook
+                        </button>
+                    </div>
                 </div>
                 {% endif %}
             </div>

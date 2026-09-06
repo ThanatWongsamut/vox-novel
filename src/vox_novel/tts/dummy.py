@@ -36,6 +36,7 @@ class DummyTTS(BaseTTS):
         use_translated: bool = True,
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
+        knowledge: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
     ) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)

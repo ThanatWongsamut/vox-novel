@@ -149,6 +149,7 @@ class NovelPipeline:
             use_translated=True,
             voice_description=narrator_desc,
             reference_audio=ref_audio,
+            knowledge=knowledge,
             progress_callback=progress_callback,
         )
 

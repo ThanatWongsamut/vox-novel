@@ -205,11 +205,13 @@ class VoxCPM2TTS(BaseTTS):
         use_translated: bool = True,
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
+        knowledge: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
     ) -> Path:
         """
         Synthesize entire chapter into a single master audio file.
         Stitches paragraph audio chunks with natural pauses.
+        Uses character reference voice anchors when available, falling back to narrator.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         final_file = output_dir / f"chapter_{chapter.id}.wav"
@@ -224,10 +226,18 @@ class VoxCPM2TTS(BaseTTS):
         pause_samples = int(self.sample_rate * 0.35)  # 350ms pause between paragraphs
         pause = np.zeros(pause_samples, dtype=np.float32)
 
-        default_desc = voice_description or "เสียงบรรยายผู้ชาย นุ่มลึก ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
+        narrator_desc = voice_description
+        if not narrator_desc and knowledge and getattr(knowledge, "narrator_voice_description", None):
+            narrator_desc = knowledge.narrator_voice_description
+        default_desc = narrator_desc or "เสียงบรรยายผู้ชาย นุ่มลึก ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
 
         # Ensure a persistent narrator reference voice exists so all narration paragraphs sound identical
         effective_narrator_ref = reference_audio
+        if effective_narrator_ref is None and knowledge and getattr(knowledge, "narrator_voice_ref_audio", None):
+            k_ref = Path(knowledge.narrator_voice_ref_audio)
+            if k_ref.exists() and k_ref.stat().st_size > 0:
+                effective_narrator_ref = k_ref
+
         if effective_narrator_ref is None or not Path(effective_narrator_ref).exists():
             voices_dir = output_dir.parent / "voices"
             voices_dir.mkdir(parents=True, exist_ok=True)
@@ -253,10 +263,32 @@ class VoxCPM2TTS(BaseTTS):
                 short_text = (text_to_speak[:25] + "...") if len(text_to_speak) > 25 else text_to_speak
                 await progress_callback(pct, f"Synthesizing {idx + 1}/{total}: {speaker_tag}{short_text}")
 
-            # Determine voice & emotion for this paragraph (consistent character reference or narrator)
+            # Determine voice & emotion for this paragraph (character-specific voice or narrator)
             para_voice_desc = default_desc
             para_ref_audio = effective_narrator_ref
             para_emotion = p.emotion
+
+            if knowledge and p.speaker and p.speaker.strip().lower() not in ("narrator", "ผู้บรรยาย"):
+                char = knowledge.find_character(p.speaker)
+                if char:
+                    # Check if character has dedicated reference audio anchor
+                    char_ref = None
+                    if char.voice_ref_audio and Path(char.voice_ref_audio).exists():
+                        char_ref = Path(char.voice_ref_audio)
+                    else:
+                        voices_dir = output_dir.parent / "voices"
+                        safe_k = re.sub(r"[\s\-_]+", "_", char.name_en.strip().lower())
+                        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+                            cand = voices_dir / f"{safe_k}_ref{ext}"
+                            if cand.exists() and cand.stat().st_size > 0:
+                                char_ref = cand
+                                break
+
+                    if char_ref:
+                        para_ref_audio = char_ref
+
+                    if char.voice_description:
+                        para_voice_desc = char.voice_description
 
             # Clean and synthesize chunk
             chunk_file = output_dir / f"para_{chapter.id}_{idx}.wav"
