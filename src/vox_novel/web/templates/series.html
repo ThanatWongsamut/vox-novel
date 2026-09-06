@@ -302,6 +302,8 @@
             let formatted = rawError;
             if (rawError.includes('429') || rawError.includes('rate-limited') || rawError.includes('rate_limit')) {
                 formatted = "<b>Upstream Rate Limit (429):</b><br>The free provider pool is temporarily saturated or daily quota reached.<br><br>💡 <i>Tip: Click 'Retry Now' to retry immediately (with automatic backoff), or open Settings to configure a personal API key or different model.</i>";
+            } else if (rawError.includes('ReadToon') || rawError.includes('เข้าสู่ระบบ') || rawError.includes('locked/paid chapter')) {
+                formatted = `<b>ReadToon Authentication Required:</b><br>${rawError}<br><br>💡 <i>Click <b>'Settings & Keys'</b> below, then click <b>'Log In via Browser'</b> to open Chrome and log in!</i>`;
             } else if (rawError.includes('401') || rawError.includes('Unauthorized') || rawError.includes('API_KEY')) {
                 formatted = "<b>Authentication Error (401):</b><br>The OpenRouter API Key is missing or invalid.<br><br>💡 <i>Please open 'Settings & Keys' and verify your API key.</i>";
             }
