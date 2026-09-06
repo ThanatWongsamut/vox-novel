@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoxNovel 🎙️📖</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-4 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl shadow-lg shadow-indigo-500/30">
+                🎙️
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                    VoxNovel <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Pipeline</span>
+                </h1>
+                <p class="text-xs text-slate-400">Scrape, Translate & Synthesize Web Novels</p>
+            </div>
+        </a>
+
+        <div class="flex items-center gap-3">
+            <a href="/explore" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-medium rounded-lg transition flex items-center gap-1.5">
+                <i class="fa-solid fa-compass text-indigo-400"></i> Explore & Search
+            </a>
+            <button onclick="openSettingsModal()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium rounded-lg transition flex items-center gap-1.5">
+                <i class="fa-solid fa-gear text-indigo-400"></i> Settings
+            </button>
+            <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition shadow-lg shadow-indigo-600/20 flex items-center gap-2">
+                <i class="fa-solid fa-plus"></i> Import Novel
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
+        <!-- Series Grid -->
+        <section>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-book-bookmark text-indigo-400"></i> Tracked Series
+                </h2>
+                <span class="text-xs text-slate-400">{{ novels|length }} series saved</span>
+            </div>
+
+            {% if novels %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {% for item in novels %}
+                <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 hover:border-indigo-500/50 transition duration-200 flex flex-col justify-between group shadow-lg">
+                    <div class="space-y-3">
+                        <div class="flex items-start gap-4">
+                            {% if item.novel.cover_url %}
+                            <img src="{{ item.novel.cover_url }}" referrerpolicy="no-referrer" alt="Cover" class="w-16 h-22 object-cover rounded-lg border border-slate-700 shadow-md">
+                            {% else %}
+                            <div class="w-16 h-22 bg-slate-700 rounded-lg flex items-center justify-center text-slate-500 text-2xl">
+                                📖
+                            </div>
+                            {% endif %}
+                            <div class="flex-1 min-w-0">
+                                <h3 class="font-semibold text-white group-hover:text-indigo-400 transition truncate text-base">
+                                    {{ item.novel.title }}
+                                </h3>
+                                <p class="text-xs text-slate-400 mt-0.5">ID: {{ item.novel.id }}</p>
+                                <div class="flex items-center gap-2 mt-2">
+                                    <span class="text-xs px-2 py-0.5 rounded bg-slate-700/80 text-slate-300">
+                                        {{ item.total_chapters }} Chs
+                                    </span>
+                                    <span class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30">
+                                        {{ item.translated_count }} Translated
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Progress Bar -->
+                        <div class="w-full bg-slate-700/60 rounded-full h-2 overflow-hidden">
+                            <div class="bg-gradient-to-r from-indigo-500 to-green-500 h-2 rounded-full" style="width: {{ item.progress_pct }}%"></div>
+                        </div>
+                    </div>
+
+                    <div class="mt-5 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+                        <span class="text-xs text-slate-400">{{ "%.1f"|format(item.progress_pct) }}% Done</span>
+                        <a href="/series/{{ item.novel.id }}" class="text-xs font-medium px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition flex items-center gap-1.5">
+                            Open Series <i class="fa-solid fa-arrow-right text-[10px]"></i>
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center py-16 border border-dashed border-slate-800 rounded-2xl bg-slate-900/30">
+                <div class="text-4xl mb-3">📚</div>
+                <h3 class="text-base font-medium text-slate-300">No novel series tracked yet</h3>
+                <p class="text-xs text-slate-500 mt-1 max-w-sm mx-auto">Import your first Webnovel URL to automatically scrape metadata, catalog chapters, and start translating.</p>
+                <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition shadow-lg shadow-indigo-600/20">
+                    Import Webnovel
+                </button>
+            </div>
+            {% endif %}
+        </section>
+    </main>
+
+    <!-- Import Modal -->
+    <div id="import-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between">
+                <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-cloud-arrow-down text-indigo-400"></i> Import Novel
+                </h3>
+                <button onclick="document.getElementById('import-modal').classList.add('hidden')" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <form action="/api/import-novel" method="POST" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Novel URL</label>
+                    <input type="url" name="url" required placeholder="https://www.webnovel.com/book/illusion-hunter-from-another-world_36119734008764305" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex justify-end gap-3 pt-2">
+                    <button type="button" onclick="document.getElementById('import-modal').classList.add('hidden')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-lg transition">Cancel</button>
+                    <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition shadow-lg shadow-indigo-600/20">Import & Catalog</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% include "settings_modal.html" %}
+</body>
+</html>

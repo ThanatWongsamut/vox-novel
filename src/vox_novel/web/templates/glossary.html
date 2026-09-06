@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Series Glossary - VoxNovel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { 
+            background-color: #0b1120; 
+            color: #e2e8f0; 
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+        }
+        
+        /* Sleek custom dark scrollbars */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(71, 85, 105, 0.6);
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.8);
+        }
+
+        .tab-btn.active {
+            background-color: #4f46e5;
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35);
+        }
+        .tab-btn:not(.active) {
+            color: #94a3b8;
+        }
+        .tab-btn:not(.active):hover {
+            color: #ffffff;
+            background-color: rgba(51, 65, 85, 0.4);
+        }
+
+        .cat-pill.active {
+            background-color: #4f46e5;
+            color: #ffffff;
+            border-color: #6366f1;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800/80 bg-slate-900/90 backdrop-blur sticky top-0 z-30 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <a href="/series/{{ knowledge.series_id }}" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-300 hover:text-white transition">
+                <i class="fa-solid fa-arrow-left text-xs"></i>
+            </a>
+            <div>
+                <div class="flex items-center gap-2.5">
+                    <h1 class="text-base font-bold tracking-tight text-white flex items-center gap-2">
+                        <i class="fa-solid fa-brain text-purple-400"></i> Series Glossary & Knowledge
+                    </h1>
+                    <span class="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        {{ knowledge.target_language.upper() }}
+                    </span>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-0.5">Series ID: <span class="font-mono text-slate-300">{{ knowledge.series_id }}</span></p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <span class="text-xs px-2.5 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
+                <i class="fa-solid fa-user-ninja text-[10px]"></i> {{ knowledge.characters|length }} Characters
+            </span>
+            <span class="text-xs px-2.5 py-1 rounded-lg bg-indigo-950/60 text-indigo-300 border border-indigo-500/30 flex items-center gap-1.5">
+                <i class="fa-solid fa-tags text-[10px]"></i> {{ knowledge.terms|length }} Terms
+            </span>
+            <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition flex items-center gap-1.5 shadow-sm">
+                <i class="fa-solid fa-sliders text-indigo-400"></i> Settings
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+        <!-- Add New Entry Form (2-row spacious layout) -->
+        <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5 shadow-xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-800/60 pb-3">
+                <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-circle-plus text-indigo-400"></i> Add Custom Term or Character
+                </h2>
+                <span class="text-[11px] text-slate-400 flex items-center gap-1">
+                    <i class="fa-solid fa-wand-magic-sparkles text-amber-400 text-[10px]"></i> Persisted into prompt glossary
+                </span>
+            </div>
+
+            <form action="/api/add-term" method="POST" class="space-y-3 text-xs">
+                <input type="hidden" name="series_id" value="{{ knowledge.series_id }}">
+                <input type="hidden" name="target_lang" value="{{ knowledge.target_language }}">
+
+                <!-- Row 1: Core Fields -->
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+                    <div class="md:col-span-4">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Source / Name (EN) *</label>
+                        <input type="text" name="source" required placeholder="e.g. Ahn Yoon-seung or Hermes' Shoes" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div class="md:col-span-3">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Target (Thai) *</label>
+                        <input type="text" name="target" required placeholder="e.g. อัน ยุนซึง หรือ รองเท้าเฮอร์เมส" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-emerald-400 font-medium placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Category</label>
+                        <select id="add-category-select" name="category" onchange="toggleAddGender(this.value)" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500">
+                            <option value="character">Character</option>
+                            <option value="gaming">Gaming</option>
+                            <option value="skill">Skill</option>
+                            <option value="item">Item</option>
+                            <option value="monster">Monster</option>
+                            <option value="location">Location</option>
+                            <option value="general">General</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-3" id="add-gender-col">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Gender & Particles</label>
+                        <select name="gender" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500">
+                            <option value="">⚪ Unknown / Neutral</option>
+                            <option value="male">♂ ชาย (ครับ - บังคับ)</option>
+                            <option value="female">♀ หญิง (ค่ะ/นะคะ - บังคับ)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 2: Aliases & Submit -->
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                    <div class="md:col-span-9">
+                        <label class="block text-[11px] font-medium text-slate-400 mb-1">Aliases (comma separated, optional)</label>
+                        <input type="text" name="aliases" placeholder="e.g. Ahn Yoonseung, Yoon-seung, Commander" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-purple-300 placeholder-slate-500 focus:outline-none focus:border-purple-500">
+                    </div>
+                    <div class="md:col-span-3">
+                        <button type="submit" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-plus"></i> Add Entry
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <!-- View Controls & Search Bar -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <!-- View Tabs -->
+            <div class="flex items-center gap-1 bg-slate-900/90 border border-slate-800/80 p-1 rounded-xl shadow-inner text-xs">
+                <button id="tab-btn-characters" onclick="switchTab('characters')" class="tab-btn active px-3.5 py-1.5 rounded-lg font-medium transition flex items-center gap-2">
+                    <i class="fa-solid fa-user-ninja text-purple-300"></i>
+                    <span>Characters</span>
+                    <span class="bg-indigo-950/80 text-indigo-200 text-[10px] px-1.5 py-0.5 rounded-md font-mono">{{ knowledge.characters|length }}</span>
+                </button>
+                <button id="tab-btn-terms" onclick="switchTab('terms')" class="tab-btn px-3.5 py-1.5 rounded-lg font-medium transition flex items-center gap-2">
+                    <i class="fa-solid fa-tags text-indigo-400"></i>
+                    <span>Terminology</span>
+                    <span class="bg-slate-800 text-slate-300 text-[10px] px-1.5 py-0.5 rounded-md font-mono">{{ knowledge.terms|length }}</span>
+                </button>
+                <button id="tab-btn-split" onclick="switchTab('split')" class="tab-btn px-3.5 py-1.5 rounded-lg font-medium transition flex items-center gap-2">
+                    <i class="fa-solid fa-columns text-slate-400"></i>
+                    <span>Side-by-Side</span>
+                </button>
+            </div>
+
+            <!-- Live Search -->
+            <div class="relative w-full sm:w-80">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                <input type="text" id="glossary-search" onkeyup="filterGlossary()" placeholder="Filter characters and terms..." class="w-full bg-slate-900/90 border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+            </div>
+        </div>
+
+        <!-- Tables Container -->
+        <div id="tables-container" class="space-y-6">
+            <!-- Characters Section -->
+            <div id="characters-wrapper" class="bg-slate-900/70 border border-slate-800/80 rounded-2xl overflow-hidden shadow-xl">
+                <div class="p-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/40">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                        <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-user-ninja text-purple-400"></i> Characters ({{ knowledge.characters|length }})
+                        </h3>
+                    </div>
+                    <span class="text-[11px] text-slate-400">Strict gender-specific Thai particles enforced</span>
+                </div>
+
+                <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
+                    <table class="w-full text-left text-xs border-collapse" id="characters-table">
+                        <thead>
+                            <tr class="border-b border-slate-800/80 bg-slate-950/60 text-[11px] uppercase tracking-wider text-slate-400">
+                                <th class="py-3 px-4 min-w-[200px]">Character (EN) & Aliases</th>
+                                <th class="py-3 px-4 min-w-[130px]">Gender & Particle</th>
+                                <th class="py-3 px-4 min-w-[140px]">Target (Thai)</th>
+                                <th class="py-3 px-4">Role / Context Notes</th>
+                                <th class="py-3 px-4 text-right min-w-[110px]">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/60">
+                            {% for key, char in knowledge.characters.items() %}
+                            <tr class="hover:bg-slate-800/40 transition group char-row" data-name="{{ char.name_en }}" data-target="{{ char.name_target }}" data-aliases="{{ char.aliases|join(' ') if char.aliases else '' }}">
+                                <td class="py-3 px-4">
+                                    <div class="font-mono font-semibold text-cyan-300 text-xs sm:text-sm whitespace-nowrap">{{ char.name_en }}</div>
+                                    {% if char.aliases %}
+                                    <div class="text-[10px] text-purple-400 mt-1 flex flex-wrap gap-1 items-center">
+                                        <i class="fa-solid fa-link text-[9px]"></i>
+                                        {% for a in char.aliases %}
+                                        <span class="bg-purple-950/70 border border-purple-500/30 px-1.5 py-0.5 rounded text-purple-300 font-mono">{{ a }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="py-3 px-4 whitespace-nowrap">
+                                    {% if char.gender and char.gender.lower() in ('male', 'm', 'ชาย') %}
+                                    <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30 shadow-sm">
+                                        <i class="fa-solid fa-mars text-[10px]"></i> ชาย (ครับ)
+                                    </span>
+                                    {% elif char.gender and char.gender.lower() in ('female', 'f', 'หญิง') %}
+                                    <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-pink-500/15 text-pink-300 border border-pink-500/30 shadow-sm">
+                                        <i class="fa-solid fa-venus text-[10px]"></i> หญิง (ค่ะ)
+                                    </span>
+                                    {% else %}
+                                    <span class="inline-flex items-center gap-1 text-[11px] text-slate-400 px-2.5 py-0.5 rounded-full bg-slate-800/60 border border-slate-700/60">
+                                        <i class="fa-regular fa-circle-question text-[10px]"></i> ไม่ระบุ
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="py-3 px-4 text-emerald-400 font-medium whitespace-nowrap text-xs sm:text-sm">
+                                    {{ char.name_target }}
+                                </td>
+                                <td class="py-3 px-4 text-slate-300">
+                                    <div class="font-medium text-slate-200">{{ char.role or '-' }}</div>
+                                    {% if char.notes %}
+                                    <div class="text-[11px] text-slate-400 mt-0.5 italic">{{ char.notes }}</div>
+                                    {% endif %}
+                                </td>
+                                <td class="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
+                                    <button onclick="openEditModal('character', '{{ char.name_en }}', '{{ char.name_target }}', '{{ char.role or '' }}', '{{ char.aliases|join(', ') if char.aliases else '' }}', '{{ char.notes or '' }}', '{{ char.gender or '' }}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-pen text-[10px] text-indigo-400"></i> Edit
+                                    </button>
+                                    <button onclick="deleteItem('character', '{{ char.name_en }}')" class="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-trash text-[10px]"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Terms Section -->
+            <div id="terms-wrapper" class="bg-slate-900/70 border border-slate-800/80 rounded-2xl overflow-hidden shadow-xl">
+                <div class="p-4 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 bg-slate-950/40">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+                        <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-tags text-indigo-400"></i> Terminology ({{ knowledge.terms|length }})
+                        </h3>
+                    </div>
+
+                    <!-- Category Pills Filter -->
+                    <div class="flex flex-wrap items-center gap-1.5 text-xs">
+                        <button onclick="filterCategory('all')" class="cat-pill active px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="all">All</button>
+                        <button onclick="filterCategory('gaming')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="gaming">Gaming</button>
+                        <button onclick="filterCategory('skill')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="skill">Skill</button>
+                        <button onclick="filterCategory('item')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="item">Item</button>
+                        <button onclick="filterCategory('monster')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="monster">Monster</button>
+                        <button onclick="filterCategory('location')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="location">Location</button>
+                        <button onclick="filterCategory('general')" class="cat-pill px-2.5 py-0.5 rounded-full text-[11px] border border-slate-700 bg-slate-800 text-slate-300 transition" data-cat="general">General</button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
+                    <table class="w-full text-left text-xs border-collapse" id="terms-table">
+                        <thead>
+                            <tr class="border-b border-slate-800/80 bg-slate-950/60 text-[11px] uppercase tracking-wider text-slate-400">
+                                <th class="py-3 px-4 min-w-[180px]">Source (EN) & Aliases</th>
+                                <th class="py-3 px-4 min-w-[150px]">Target (Thai)</th>
+                                <th class="py-3 px-4 min-w-[100px]">Category</th>
+                                <th class="py-3 px-4">Context Notes</th>
+                                <th class="py-3 px-4 text-right min-w-[110px]">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/60">
+                            {% for key, term in knowledge.terms.items() %}
+                            <tr class="hover:bg-slate-800/40 transition group term-row" data-cat="{{ term.category }}" data-name="{{ term.source }}" data-target="{{ term.target }}" data-aliases="{{ term.aliases|join(' ') if term.aliases else '' }}">
+                                <td class="py-3 px-4">
+                                    <div class="font-mono font-medium text-cyan-300 text-xs sm:text-sm">{{ term.source }}</div>
+                                    {% if term.aliases %}
+                                    <div class="text-[10px] text-indigo-400 mt-1 flex flex-wrap gap-1 items-center">
+                                        <i class="fa-solid fa-link text-[9px]"></i>
+                                        {% for a in term.aliases %}
+                                        <span class="bg-indigo-950/70 border border-indigo-500/30 px-1.5 py-0.5 rounded text-indigo-300 font-mono">{{ a }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="py-3 px-4 text-emerald-400 font-medium text-xs sm:text-sm">{{ term.target }}</td>
+                                <td class="py-3 px-4 whitespace-nowrap">
+                                    {% set cat = term.category|lower %}
+                                    {% if cat == 'gaming' %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/15 text-blue-300 border border-blue-500/30">Gaming</span>
+                                    {% elif cat == 'skill' %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-500/15 text-purple-300 border border-purple-500/30">Skill</span>
+                                    {% elif cat == 'item' %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30">Item</span>
+                                    {% elif cat == 'monster' %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30">Monster</span>
+                                    {% elif cat == 'location' %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Location</span>
+                                    {% else %}
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-300 border border-slate-600/40">{{ term.category|capitalize }}</span>
+                                    {% endif %}
+                                </td>
+                                <td class="py-3 px-4 text-slate-400 text-[11px]">{{ term.notes or '-' }}</td>
+                                <td class="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
+                                    <button onclick="openEditModal('term', '{{ term.source }}', '{{ term.target }}', '{{ term.category }}', '{{ term.aliases|join(', ') if term.aliases else '' }}', '{{ term.notes or '' }}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-pen text-[10px] text-indigo-400"></i> Edit
+                                    </button>
+                                    <button onclick="deleteItem('term', '{{ term.source }}')" class="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-trash text-[10px]"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Edit Modal Dialog -->
+    <div id="edit-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-5">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <h3 id="modal-title" class="text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-pen text-indigo-400"></i> Edit Entry
+                </h3>
+                <button onclick="closeEditModal()" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <form id="edit-form" onsubmit="submitEdit(event)" class="space-y-4 text-xs">
+                <input type="hidden" id="edit-type">
+                <input type="hidden" id="edit-old-key">
+
+                <div>
+                    <label class="block font-medium text-slate-400 mb-1">Source / English Name</label>
+                    <input type="text" id="edit-name" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+                </div>
+
+                <div>
+                    <label class="block font-medium text-slate-400 mb-1">Thai Translation</label>
+                    <input type="text" id="edit-target" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-emerald-400 font-medium focus:outline-none focus:border-indigo-500">
+                </div>
+
+                <div id="role-category-wrapper">
+                    <label id="role-category-label" class="block font-medium text-slate-400 mb-1">Role / Category</label>
+                    <input type="text" id="edit-role-category" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500" placeholder="e.g. Hunter, Boss, skill, item">
+                </div>
+
+                <div id="edit-gender-wrapper">
+                    <label class="block font-medium text-slate-400 mb-1">Gender & Politeness Particle</label>
+                    <select id="edit-gender" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+                        <option value="">⚪ Unknown / Neutral</option>
+                        <option value="male">♂ ชาย (ครับ - ห้ามใช้ ค่ะ/นะคะ)</option>
+                        <option value="female">♀ หญิง (ค่ะ/นะคะ - ห้ามใช้ ครับ)</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block font-medium text-slate-400 mb-1">Aliases (comma separated)</label>
+                    <input type="text" id="edit-aliases" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-purple-300 focus:outline-none focus:border-purple-500" placeholder="e.g. Alternate spelling, title, nickname">
+                </div>
+
+                <div>
+                    <label class="block font-medium text-slate-400 mb-1">Notes / Context</label>
+                    <input type="text" id="edit-notes" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-300 focus:outline-none focus:border-indigo-500" placeholder="Optional context or lore notes">
+                </div>
+
+                <div class="flex justify-end gap-2.5 pt-3 border-t border-slate-800">
+                    <button type="button" onclick="closeEditModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition">
+                        Cancel
+                    </button>
+                    <button type="submit" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5">
+                        <i class="fa-solid fa-floppy-disk"></i> Save Changes
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const seriesId = "{{ knowledge.series_id }}";
+        const targetLang = "{{ knowledge.target_language }}";
+
+        let currentTab = 'characters';
+        let selectedCategory = 'all';
+
+        function switchTab(tab) {
+            currentTab = tab;
+            const charWrap = document.getElementById('characters-wrapper');
+            const termWrap = document.getElementById('terms-wrapper');
+            const container = document.getElementById('tables-container');
+
+            // Update tab buttons
+            ['characters', 'terms', 'split'].forEach(t => {
+                const btn = document.getElementById('tab-btn-' + t);
+                if (btn) {
+                    if (t === tab) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                }
+            });
+
+            if (tab === 'characters') {
+                container.className = 'space-y-6';
+                charWrap.classList.remove('hidden');
+                termWrap.classList.add('hidden');
+            } else if (tab === 'terms') {
+                container.className = 'space-y-6';
+                charWrap.classList.add('hidden');
+                termWrap.classList.remove('hidden');
+            } else if (tab === 'split') {
+                container.className = 'grid grid-cols-1 lg:grid-cols-2 gap-6';
+                charWrap.classList.remove('hidden');
+                termWrap.classList.remove('hidden');
+            }
+        }
+
+        function filterCategory(cat) {
+            selectedCategory = cat;
+            document.querySelectorAll('.cat-pill').forEach(btn => {
+                if (btn.dataset.cat === cat) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            filterGlossary();
+        }
+
+        function filterGlossary() {
+            const query = (document.getElementById('glossary-search').value || '').trim().toLowerCase();
+
+            // Filter Characters
+            document.querySelectorAll('.char-row').forEach(row => {
+                const name = (row.dataset.name || '').toLowerCase();
+                const target = (row.dataset.target || '').toLowerCase();
+                const aliases = (row.dataset.aliases || '').toLowerCase();
+                const matches = !query || name.includes(query) || target.includes(query) || aliases.includes(query);
+                row.style.display = matches ? '' : 'none';
+            });
+
+            // Filter Terms
+            document.querySelectorAll('.term-row').forEach(row => {
+                const cat = (row.dataset.cat || '').toLowerCase();
+                const name = (row.dataset.name || '').toLowerCase();
+                const target = (row.dataset.target || '').toLowerCase();
+                const aliases = (row.dataset.aliases || '').toLowerCase();
+
+                const matchesCat = selectedCategory === 'all' || cat === selectedCategory.toLowerCase();
+                const matchesQuery = !query || name.includes(query) || target.includes(query) || aliases.includes(query);
+
+                row.style.display = (matchesCat && matchesQuery) ? '' : 'none';
+            });
+        }
+
+        function toggleAddGender(category) {
+            const genderCol = document.getElementById('add-gender-col');
+            if (category === 'character') {
+                genderCol.classList.remove('opacity-40', 'pointer-events-none');
+            } else {
+                genderCol.classList.add('opacity-40', 'pointer-events-none');
+            }
+        }
+
+        function openEditModal(type, name, target, roleOrCat, aliases, notes, gender) {
+            document.getElementById('edit-type').value = type;
+            document.getElementById('edit-old-key').value = name;
+            document.getElementById('edit-name').value = name;
+            document.getElementById('edit-target').value = target;
+            document.getElementById('edit-role-category').value = roleOrCat || '';
+            document.getElementById('edit-aliases').value = aliases || '';
+            document.getElementById('edit-notes').value = notes || '';
+            document.getElementById('edit-gender').value = gender || '';
+
+            const titleEl = document.getElementById('modal-title');
+            const labelEl = document.getElementById('role-category-label');
+            const genderWrap = document.getElementById('edit-gender-wrapper');
+
+            if (type === 'character') {
+                titleEl.innerHTML = '<i class="fa-solid fa-user-ninja text-purple-400"></i> Edit Character';
+                labelEl.innerText = 'Character Role';
+                genderWrap.classList.remove('hidden');
+            } else {
+                titleEl.innerHTML = '<i class="fa-solid fa-tags text-indigo-400"></i> Edit Term';
+                labelEl.innerText = 'Category (gaming, skill, item, monster, location, general)';
+                genderWrap.classList.add('hidden');
+            }
+
+            document.getElementById('edit-modal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-modal').classList.add('hidden');
+        }
+
+        async function submitEdit(event) {
+            event.preventDefault();
+            const type = document.getElementById('edit-type').value;
+            const oldKey = document.getElementById('edit-old-key').value;
+            const name = document.getElementById('edit-name').value.trim();
+            const target = document.getElementById('edit-target').value.trim();
+            const roleOrCat = document.getElementById('edit-role-category').value.trim();
+            const gender = document.getElementById('edit-gender').value;
+            const rawAliases = document.getElementById('edit-aliases').value;
+            const notes = document.getElementById('edit-notes').value.trim();
+
+            const aliases = rawAliases.split(',').map(a => a.trim()).filter(Boolean);
+
+            try {
+                const resp = await fetch('/api/glossary/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_id: seriesId,
+                        target_lang: targetLang,
+                        type: type,
+                        old_key: oldKey,
+                        name: name,
+                        target: target,
+                        gender: type === 'character' ? gender : null,
+                        role_or_category: roleOrCat,
+                        aliases: aliases,
+                        notes: notes,
+                    }),
+                });
+
+                if (resp.ok) {
+                    window.location.reload();
+                } else {
+                    const err = await resp.json();
+                    alert('Failed to update: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            }
+        }
+
+        async function deleteItem(type, key) {
+            if (!confirm(`Are you sure you want to delete "${key}" from the glossary?`)) {
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/glossary/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_id: seriesId,
+                        target_lang: targetLang,
+                        type: type,
+                        key: key,
+                    }),
+                });
+
+                if (resp.ok) {
+                    window.location.reload();
+                } else {
+                    const err = await resp.json();
+                    alert('Failed to delete: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            }
+        }
+
+        // Initialize view
+        document.addEventListener('DOMContentLoaded', () => {
+            switchTab('characters');
+        });
+    </script>
+    {% include "settings_modal.html" %}
+</body>
+</html>

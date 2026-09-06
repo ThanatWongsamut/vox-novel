@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search & Browse - VoxNovel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <a href="/" class="text-slate-400 hover:text-white transition mr-2">
+                <i class="fa-solid fa-arrow-left"></i>
+            </a>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                    <i class="fa-solid fa-compass text-indigo-400"></i> Explore Webnovels
+                </h1>
+                <p class="text-xs text-slate-400">Search keywords or browse popular stories directly from Webnovel</p>
+            </div>
+        </div>
+
+        <a href="/" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition">
+            My Library
+        </a>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
+        <!-- Search Bar -->
+        <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 shadow-xl space-y-4">
+            <form action="/explore" method="GET" class="flex flex-col md:flex-row gap-3">
+                <div class="relative flex-1">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3.5 text-slate-500 text-xs"></i>
+                    <input type="text" name="q" value="{{ query or '' }}" placeholder="Search novels (e.g. 'Release that Witch', 'Shadow Slave', 'Hunter')..." class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <button type="submit" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-search"></i> Search
+                </button>
+            </form>
+
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span class="text-slate-400">Quick Browse:</span>
+                <a href="/explore?q=Release+that+Witch" class="px-2.5 py-1 rounded-lg bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition">Release that Witch</a>
+                <a href="/explore?q=Shadow+Slave" class="px-2.5 py-1 rounded-lg bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition">Shadow Slave</a>
+                <a href="/explore?q=Lord+of+Mysteries" class="px-2.5 py-1 rounded-lg bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition">Lord of Mysteries</a>
+                <a href="/explore" class="px-2.5 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 transition">🔥 Popular Stories</a>
+            </div>
+        </div>
+
+        <!-- Results Grid -->
+        <section>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                    {% if query %}
+                    <i class="fa-solid fa-search text-indigo-400"></i> Results for "{{ query }}" ({{ results|length }})
+                    {% else %}
+                    <i class="fa-solid fa-fire text-amber-400"></i> Popular Novels
+                    {% endif %}
+                </h2>
+            </div>
+
+            {% if results %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {% for b in results %}
+                <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 hover:border-indigo-500/50 transition duration-200 flex flex-col justify-between group shadow-lg">
+                    <div class="flex items-start gap-4">
+                        {% if b.cover_url %}
+                        <img src="{{ b.cover_url }}" referrerpolicy="no-referrer" alt="Cover" class="w-20 h-28 object-cover rounded-xl border border-slate-700 shadow-md flex-shrink-0">
+                        {% else %}
+                        <div class="w-20 h-28 bg-slate-700 rounded-xl flex items-center justify-center text-slate-500 text-3xl flex-shrink-0">
+                            📖
+                        </div>
+                        {% endif %}
+                        <div class="flex-1 min-w-0 space-y-1">
+                            <h3 class="font-semibold text-white group-hover:text-indigo-400 transition text-sm leading-snug line-clamp-2">
+                                {{ b.title }}
+                            </h3>
+                            <p class="text-[11px] text-slate-400 line-clamp-3 leading-relaxed mt-1">
+                                {{ b.synopsis or 'No description.' }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+                        <span class="text-[11px] text-slate-500">ID: {{ b.id }}</span>
+                        <form action="/api/import-novel" method="POST" class="inline">
+                            <input type="hidden" name="url" value="{{ b.url }}">
+                            <button type="submit" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition shadow-md shadow-indigo-600/20 flex items-center gap-1.5">
+                                <i class="fa-solid fa-plus"></i> Import & Track
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center py-16 border border-dashed border-slate-800 rounded-2xl bg-slate-900/30">
+                <div class="text-4xl mb-3">🔍</div>
+                <h3 class="text-base font-medium text-slate-300">No novels found</h3>
+                <p class="text-xs text-slate-500 mt-1">Try another keyword or browse popular novels.</p>
+            </div>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

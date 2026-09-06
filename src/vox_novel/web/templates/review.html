@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Review New Terms - VoxNovel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <a href="/series/{{ series_id }}" class="text-slate-400 hover:text-white transition mr-2">
+                <i class="fa-solid fa-arrow-left"></i>
+            </a>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                    <i class="fa-solid fa-clipboard-check text-yellow-400"></i> Pre-Translation Term & Alias Review
+                </h1>
+                <p class="text-xs text-slate-400">{{ chapter_title }}</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition flex items-center gap-1.5">
+                <i class="fa-solid fa-sliders text-indigo-400"></i> Settings
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-4xl w-full mx-auto p-6 space-y-6">
+        <div class="bg-indigo-950/40 border border-indigo-500/30 rounded-2xl p-4 text-xs text-indigo-200 flex items-start gap-3">
+            <i class="fa-solid fa-circle-info text-base text-indigo-400 mt-0.5"></i>
+            <div>
+                <p class="font-semibold text-white">Review Newly Discovered Entities & Aliases</p>
+                <p class="mt-0.5 text-slate-300">The AI pre-scanned this chapter and grouped synonymous/alternate names under unified primary terms. You can customize the suggested Thai translations or edit aliases. Once approved, all alias variations will consistently map to the single approved Thai name!</p>
+            </div>
+        </div>
+
+        <form id="review-form" action="/api/confirm-translation" method="POST" onsubmit="event.preventDefault(); submitReview(event); return false;" class="space-y-6">
+            <input type="hidden" name="review_id" value="{{ review_id or '' }}">
+            <input type="hidden" name="series_id" value="{{ series_id }}">
+            <input type="hidden" name="chapter_url" value="{{ chapter_url }}">
+            <input type="hidden" name="model" value="{{ model }}">
+            <input type="hidden" name="target_lang" value="{{ target_lang }}">
+
+            {% if new_characters %}
+            <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 shadow-xl space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-700/60 pb-2">
+                    <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-user-ninja text-purple-400"></i> New Characters Found ({{ new_characters|length }})
+                    </h2>
+                    <div class="flex items-center gap-2 text-xs">
+                        <button type="button" onclick="toggleAllCheckboxes('char', true)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition text-[11px] font-medium">
+                            <i class="fa-solid fa-check-double text-indigo-400"></i> Select All
+                        </button>
+                        <button type="button" onclick="toggleAllCheckboxes('char', false)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition text-[11px] font-medium">
+                            <i class="fa-solid fa-xmark text-rose-400"></i> Uncheck All
+                        </button>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    {% for c in new_characters %}
+                    <div class="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3 space-y-2">
+                        <div class="flex flex-col md:flex-row items-center gap-3">
+                            <label class="flex items-center gap-2 flex-1 min-w-[180px] cursor-pointer">
+                                <input type="checkbox" name="char_include_{{ loop.index0 }}" value="1" checked class="w-4 h-4 rounded text-indigo-600 bg-slate-800 border-slate-600 focus:ring-indigo-500">
+                                <input type="hidden" name="char_name_en_{{ loop.index0 }}" value="{{ c.name_en }}">
+                                <input type="hidden" name="char_role_{{ loop.index0 }}" value="{{ c.role or '' }}">
+                                <span class="text-xs font-mono font-bold text-cyan-300">{{ c.name_en }}</span>
+                                {% if c.role %}<span class="text-[10px] text-slate-400">({{ c.role }})</span>{% endif %}
+                            </label>
+                            <div class="w-32 flex-shrink-0">
+                                <select name="char_gender_{{ loop.index0 }}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-purple-300 focus:outline-none focus:border-purple-500">
+                                    <option value="male" {% if c.gender and c.gender.lower() == 'male' %}selected{% endif %}>♂ Male (ครับ)</option>
+                                    <option value="female" {% if c.gender and c.gender.lower() == 'female' %}selected{% endif %}>♀ Female (ค่ะ)</option>
+                                    <option value="" {% if not c.gender or c.gender.lower() not in ('male', 'female') %}selected{% endif %}>⚪ Unknown</option>
+                                </select>
+                            </div>
+                            <div class="flex-1 w-full md:w-auto">
+                                <input type="text" name="char_target_{{ loop.index0 }}" value="{{ c.suggested_target }}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-green-400 font-medium focus:outline-none focus:border-indigo-500" placeholder="Thai Name">
+                            </div>
+                        </div>
+                        <div class="pl-6 flex items-center gap-2 text-[11px] text-slate-400">
+                            <span class="text-purple-400 font-medium"><i class="fa-solid fa-link text-[10px]"></i> Aliases:</span>
+                            <input type="text" name="char_aliases_{{ loop.index0 }}" value="{{ c.aliases|join(', ') if c.aliases else '' }}" class="flex-1 bg-slate-800/80 border border-slate-700/60 rounded px-2.5 py-1 text-[11px] text-slate-300 focus:outline-none focus:border-purple-500" placeholder="e.g. Ahn Yoon-seung, Yoonseung (comma separated)">
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if new_terms %}
+            <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 shadow-xl space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-700/60 pb-2">
+                    <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-tags text-indigo-400"></i> New Terms & Skills Found ({{ new_terms|length }})
+                    </h2>
+                    <div class="flex items-center gap-2 text-xs">
+                        <button type="button" onclick="toggleAllCheckboxes('term', true)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition text-[11px] font-medium">
+                            <i class="fa-solid fa-check-double text-indigo-400"></i> Select All
+                        </button>
+                        <button type="button" onclick="toggleAllCheckboxes('term', false)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition text-[11px] font-medium">
+                            <i class="fa-solid fa-xmark text-rose-400"></i> Uncheck All
+                        </button>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    {% for t in new_terms %}
+                    <div class="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3 space-y-2">
+                        <div class="flex flex-col md:flex-row items-center gap-3">
+                            <label class="flex items-center gap-2 flex-1 min-w-[180px] cursor-pointer">
+                                <input type="checkbox" name="term_include_{{ loop.index0 }}" value="1" checked class="w-4 h-4 rounded text-indigo-600 bg-slate-800 border-slate-600 focus:ring-indigo-500">
+                                <input type="hidden" name="term_source_{{ loop.index0 }}" value="{{ t.source }}">
+                                <input type="hidden" name="term_category_{{ loop.index0 }}" value="{{ t.category or 'general' }}">
+                                <input type="hidden" name="term_notes_{{ loop.index0 }}" value="{{ t.notes or '' }}">
+                                <span class="text-xs font-mono font-bold text-cyan-300">{{ t.source }}</span>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">{{ t.category }}</span>
+                            </label>
+                            <div class="flex-1 w-full md:w-auto">
+                                <input type="text" name="term_target_{{ loop.index0 }}" value="{{ t.suggested_target }}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-green-400 font-medium focus:outline-none focus:border-indigo-500" placeholder="Thai Translation">
+                            </div>
+                        </div>
+                        {% if t.aliases %}
+                        <div class="pl-6 flex items-center gap-2 text-[11px] text-slate-400">
+                            <span class="text-indigo-400 font-medium"><i class="fa-solid fa-link text-[10px]"></i> Aliases:</span>
+                            <input type="text" name="term_aliases_{{ loop.index0 }}" value="{{ t.aliases|join(', ') }}" class="flex-1 bg-slate-800/80 border border-slate-700/60 rounded px-2 py-1 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500" placeholder="e.g. Baron of the Garden, Flower Garden Baron">
+                        </div>
+                        {% else %}
+                        <input type="hidden" name="term_aliases_{{ loop.index0 }}" value="">
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if not new_characters and not new_terms %}
+            <div class="bg-slate-800/40 border border-slate-700 rounded-2xl p-8 text-center space-y-2">
+                <div class="text-3xl">✨</div>
+                <h3 class="text-sm font-semibold text-white">No New Entities Detected</h3>
+                <p class="text-xs text-slate-400">All characters and special terms in this chapter are already in your series glossary!</p>
+            </div>
+            {% endif %}
+
+            <div class="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-700/60">
+                <label class="flex items-center gap-2 text-xs text-purple-300 font-medium cursor-pointer bg-purple-950/40 border border-purple-500/30 px-3.5 py-2 rounded-xl hover:bg-purple-900/40 transition">
+                    <input type="checkbox" name="agentic" value="true" {% if agentic_mode %}checked{% endif %} class="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 bg-slate-800 border-slate-600">
+                    <span><i class="fa-solid fa-wand-magic-sparkles text-purple-400"></i> Enable Agentic Editor Mode (Polished Thai Prose & Strict Alias Alignment)</span>
+                </label>
+                <div class="flex items-center gap-3">
+                    <a href="/series/{{ series_id }}" class="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded-xl transition">
+                        Cancel
+                    </a>
+                    <button type="button" id="review-submit-btn" onclick="submitReview(event)" class="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+                        <i class="fa-solid fa-play"></i> <span id="review-submit-text">Approve & Continue Translation</span>
+                    </button>
+                </div>
+            </div>
+        </form>
+    </main>
+
+    <!-- SSE Progress Overlay -->
+    <div id="review-loading-overlay" class="fixed inset-0 bg-slate-950/95 z-50 flex items-center justify-center p-6 hidden">
+        <div class="bg-slate-900 border border-slate-700/80 rounded-3xl p-8 max-w-md w-full shadow-2xl text-center space-y-6 transform-gpu">
+            <!-- Active Progress Box -->
+            <div id="review-active-box" class="space-y-6">
+                <div class="relative w-20 h-20 mx-auto transform-gpu">
+                    <div class="absolute inset-0 rounded-full border-4 border-purple-500/20"></div>
+                    <div class="absolute inset-0 rounded-full border-4 border-purple-500 border-t-transparent animate-spin" style="will-change: transform;"></div>
+                    <div class="absolute inset-0 flex items-center justify-center text-2xl">⚡</div>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 id="review-loading-title" class="text-base font-bold text-white tracking-wide">
+                        Translating Chapter...
+                    </h3>
+                    <div id="review-loading-step-container">
+                        <p id="review-loading-step" class="text-xs text-indigo-300 font-medium">
+                            Applying approved terms to chapter...
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Live Progress Bar -->
+                <div class="space-y-1.5">
+                    <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700/50">
+                        <div id="review-loading-bar" class="bg-gradient-to-r from-indigo-500 via-purple-500 to-green-400 h-2.5 rounded-full transition-all duration-300 w-[5%]"></div>
+                    </div>
+                    <div class="flex justify-between text-[11px] text-slate-400">
+                        <span id="review-pct-text">5%</span>
+                        <span>Live SSE Stream</span>
+                    </div>
+                </div>
+
+                <p class="text-[11px] text-slate-500 italic">
+                    Using OpenRouter LLM • Applying Thai Fantasy Glossary
+                </p>
+            </div>
+
+            <!-- Error State Box (Hidden by default) -->
+            <div id="review-error-box" class="hidden space-y-5">
+                <div class="w-16 h-16 mx-auto rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 text-2xl shadow-lg shadow-rose-500/10">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 class="text-base font-bold text-white tracking-wide">
+                        Translation Paused / Limit Hit
+                    </h3>
+                    <div id="review-error-desc" class="text-xs text-slate-300 bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 text-left leading-relaxed max-h-36 overflow-y-auto font-mono">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
+                    <button onclick="retryReviewTranslation()" class="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-1.5">
+                        <i class="fa-solid fa-rotate-right"></i> Retry Now
+                    </button>
+                    <button onclick="openSettingsModal()" class="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium rounded-xl transition flex items-center justify-center gap-1.5">
+                        <i class="fa-solid fa-sliders text-indigo-400"></i> Settings & Keys
+                    </button>
+                    <button onclick="hideReviewLoadingOverlay()" class="w-full sm:w-auto px-3.5 py-2 bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white text-xs rounded-xl transition">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% include "settings_modal.html" %}
+
+    <script>
+        let currentEvtSource = null;
+
+        function toggleAllCheckboxes(prefix, state) {
+            const boxes = document.querySelectorAll(`input[type="checkbox"][name^="${prefix}_include_"]`);
+            boxes.forEach(cb => { cb.checked = state; });
+            updateSubmitButtonState();
+        }
+
+        function updateSubmitButtonState() {
+            const charBoxes = document.querySelectorAll('input[type="checkbox"][name^="char_include_"]:checked');
+            const termBoxes = document.querySelectorAll('input[type="checkbox"][name^="term_include_"]:checked');
+            const totalChecked = charBoxes.length + termBoxes.length;
+
+            const btn = document.getElementById('review-submit-btn');
+            const text = document.getElementById('review-submit-text');
+            if (!btn || !text) return;
+
+            if (totalChecked === 0) {
+                text.innerText = 'Continue Translation (Skip Terms)';
+                btn.className = 'px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center gap-2';
+            } else {
+                text.innerText = `Approve (${totalChecked}) & Continue Translation`;
+                btn.className = 'px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/30 flex items-center gap-2';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                cb.addEventListener('change', updateSubmitButtonState);
+            });
+            updateSubmitButtonState();
+        });
+
+        function hideReviewLoadingOverlay() {
+            if (currentEvtSource) {
+                currentEvtSource.close();
+                currentEvtSource = null;
+            }
+            document.getElementById('review-loading-overlay').classList.add('hidden');
+        }
+
+        function showReviewLoadingError(rawError) {
+            const activeBox = document.getElementById('review-active-box');
+            const errorBox = document.getElementById('review-error-box');
+            const descEl = document.getElementById('review-error-desc');
+
+            activeBox.classList.add('hidden');
+            errorBox.classList.remove('hidden');
+
+            // Format message based on common API issues
+            let formatted = rawError;
+            if (rawError.includes('429') || rawError.includes('rate-limited') || rawError.includes('rate_limit')) {
+                formatted = "<b>Upstream Rate Limit (429):</b><br>The free provider pool is temporarily saturated or daily quota reached.<br><br>💡 <i>Tip: Click 'Retry Now' to retry immediately (with automatic backoff), or open Settings to configure a personal API key or different model.</i>";
+            } else if (rawError.includes('401') || rawError.includes('Unauthorized') || rawError.includes('API_KEY')) {
+                formatted = "<b>Authentication Error (401):</b><br>The OpenRouter API Key is missing or invalid.<br><br>💡 <i>Please open 'Settings & Keys' and verify your API key.</i>";
+            }
+
+            descEl.innerHTML = formatted;
+        }
+
+        function retryReviewTranslation() {
+            const activeBox = document.getElementById('review-active-box');
+            const errorBox = document.getElementById('review-error-box');
+            activeBox.classList.remove('hidden');
+            errorBox.classList.add('hidden');
+            submitReview();
+        }
+
+        async function submitReview(e) {
+            if (e && e.preventDefault) {
+                e.preventDefault();
+            }
+            const form = document.getElementById('review-form');
+            const overlay = document.getElementById('review-loading-overlay');
+            const activeBox = document.getElementById('review-active-box');
+            const errorBox = document.getElementById('review-error-box');
+            const stepEl = document.getElementById('review-loading-step');
+            const bar = document.getElementById('review-loading-bar');
+            const pctText = document.getElementById('review-pct-text');
+
+            const charBoxes = document.querySelectorAll('input[type="checkbox"][name^="char_include_"]:checked');
+            const termBoxes = document.querySelectorAll('input[type="checkbox"][name^="term_include_"]:checked');
+            const totalChecked = charBoxes.length + termBoxes.length;
+
+            activeBox.classList.remove('hidden');
+            errorBox.classList.add('hidden');
+            overlay.classList.remove('hidden');
+            bar.style.width = '5%';
+            pctText.innerText = '5%';
+
+            if (totalChecked === 0) {
+                stepEl.innerHTML = '<span class="text-indigo-300">Starting chapter translation (skipped new terms)...</span>';
+            } else {
+                stepEl.innerHTML = `<span class="text-indigo-300">Applying ${totalChecked} approved terms to chapter...</span>`;
+            }
+
+            const formData = new FormData(form);
+
+            try {
+                const resp = await fetch('/api/confirm-translation', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    showReviewLoadingError(`Failed to confirm translation (${resp.status}): ${text}`);
+                    return;
+                }
+
+                const data = await resp.json();
+                if (data.job_id) {
+                    listenSSE(data.job_id);
+                }
+            } catch (err) {
+                showReviewLoadingError(err.message);
+            }
+        }
+
+        function listenSSE(jobId) {
+            const stepEl = document.getElementById('review-loading-step');
+            const bar = document.getElementById('review-loading-bar');
+            const pctText = document.getElementById('review-pct-text');
+
+            if (currentEvtSource) {
+                currentEvtSource.close();
+            }
+
+            currentEvtSource = new EventSource('/api/progress/' + jobId);
+
+            currentEvtSource.onmessage = function(event) {
+                try {
+                    const job = JSON.parse(event.data);
+                    if (job.progress !== undefined) {
+                        bar.style.width = job.progress + '%';
+                        pctText.innerText = job.progress + '%';
+                    }
+                    if (job.message) {
+                        if (job.message.toLowerCase().includes('rate limit') || job.message.toLowerCase().includes('cooldown') || job.message.includes('429')) {
+                            stepEl.innerHTML = `<span class="inline-flex items-center gap-1.5 text-amber-300 font-medium px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30"><i class="fa-solid fa-clock-rotate-left"></i> ${job.message}</span>`;
+                        } else {
+                            stepEl.innerText = job.message;
+                        }
+                    }
+
+                    if (job.status === 'completed' && job.redirect_url) {
+                        currentEvtSource.close();
+                        setTimeout(() => {
+                            window.location.href = job.redirect_url;
+                        }, 600);
+                    } else if (job.status === 'failed') {
+                        currentEvtSource.close();
+                        showReviewLoadingError(job.error || "Unknown translation error occurred");
+                    }
+                } catch (e) {
+                    console.error("SSE parse error", e);
+                }
+            };
+
+            currentEvtSource.onerror = function(err) {
+                console.error("SSE connection error", err);
+            };
+        }
+    </script>
+</body>
+</html>

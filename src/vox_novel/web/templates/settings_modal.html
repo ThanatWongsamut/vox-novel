@@ -1,0 +1,255 @@
+<!-- Settings Modal Dialog -->
+<div id="settings-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-5">
+        <!-- Header -->
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+            <div>
+                <h3 class="text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-sliders text-indigo-400"></i> Settings & API Credentials
+                </h3>
+                <p class="text-xs text-slate-400 mt-0.5">Configure your translation model and API keys</p>
+            </div>
+            <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white transition w-8 h-8 rounded-lg flex items-center justify-center hover:bg-slate-800">
+                <i class="fa-solid fa-xmark text-lg"></i>
+            </button>
+        </div>
+
+        <!-- Form -->
+        <form id="settings-form" onsubmit="saveSettings(event)" class="space-y-4 text-xs">
+            <!-- OpenRouter API Key -->
+            <div class="space-y-1.5">
+                <div class="flex items-center justify-between">
+                    <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                        <i class="fa-solid fa-key text-indigo-400"></i> OpenRouter API Key
+                    </label>
+                    <a href="https://openrouter.ai/keys" target="_blank" class="text-[11px] text-indigo-400 hover:underline flex items-center gap-1">
+                        Get free key <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
+                    </a>
+                </div>
+                <div class="relative flex items-center">
+                    <input type="password" id="setting-openrouter-key" placeholder="sk-or-v1-..." class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-20 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    <div class="absolute right-1 flex items-center gap-1">
+                        <button type="button" onclick="toggleKeyVisibility('setting-openrouter-key', 'openrouter-eye-icon')" class="p-1.5 text-slate-400 hover:text-white text-xs">
+                            <i id="openrouter-eye-icon" class="fa-solid fa-eye"></i>
+                        </button>
+                        <button type="button" onclick="testSettingsKey()" class="px-2 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded text-[11px] font-medium transition">
+                            Test
+                        </button>
+                    </div>
+                </div>
+                <div id="key-test-status" class="text-[11px] hidden"></div>
+            </div>
+
+            <!-- Translation Model -->
+            <div class="space-y-1.5">
+                <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                    <i class="fa-solid fa-microchip text-purple-400"></i> Translation Model
+                </label>
+                <select id="setting-model-select" onchange="handleModelChange(this.value)" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500 text-xs">
+                    <option value="minimax/minimax-m3:free">minimax/minimax-m3:free (Free • Literary Thai & Nuance)</option>
+                    <option value="minimax/minimax-m2.7:free">minimax/minimax-m2.7:free (Free • Fast Reasoning)</option>
+                    <option value="google/gemini-2.0-flash-exp:free">google/gemini-2.0-flash-exp:free (Free • Google)</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (Free • Llama 3.3)</option>
+                    <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (Paid • ~$0.14/M tokens, High Quality, No Rate Limits)</option>
+                    <option value="custom">Custom OpenRouter Model...</option>
+                </select>
+                <div id="custom-model-wrapper" class="hidden mt-2">
+                    <input type="text" id="setting-custom-model" placeholder="e.g. anthropic/claude-3.5-haiku" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    <p class="text-[10px] text-slate-500 mt-1">Enter any model ID from the OpenRouter model catalog.</p>
+                </div>
+            </div>
+
+            <!-- Gemini API Key (Optional) -->
+            <div class="space-y-1.5 pt-1">
+                <div class="flex items-center justify-between">
+                    <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                        <i class="fa-brands fa-google text-cyan-400"></i> Gemini API Key <span class="text-slate-500 font-normal">(Optional)</span>
+                    </label>
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-[11px] text-cyan-400 hover:underline flex items-center gap-1">
+                        Google AI Studio <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
+                    </a>
+                </div>
+                <div class="relative flex items-center">
+                    <input type="password" id="setting-gemini-key" placeholder="AIzaSy..." class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    <button type="button" onclick="toggleKeyVisibility('setting-gemini-key', 'gemini-eye-icon')" class="absolute right-2 p-1.5 text-slate-400 hover:text-white text-xs">
+                        <i id="gemini-eye-icon" class="fa-solid fa-eye"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Status banner -->
+            <div id="settings-status-banner" class="hidden p-2.5 rounded-xl text-xs flex items-center gap-2"></div>
+
+            <!-- Footer Buttons -->
+            <div class="flex justify-end gap-2.5 pt-3 border-t border-slate-800">
+                <button type="button" onclick="closeSettingsModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition">
+                    Cancel
+                </button>
+                <button type="submit" id="save-settings-btn" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Settings
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    async function openSettingsModal() {
+        const modal = document.getElementById('settings-modal');
+        const statusBanner = document.getElementById('settings-status-banner');
+        const testStatus = document.getElementById('key-test-status');
+        if (statusBanner) statusBanner.classList.add('hidden');
+        if (testStatus) testStatus.classList.add('hidden');
+
+        try {
+            const resp = await fetch('/api/settings');
+            if (resp.ok) {
+                const data = await resp.json();
+                const keyInput = document.getElementById('setting-openrouter-key');
+                const geminiInput = document.getElementById('setting-gemini-key');
+                const modelSelect = document.getElementById('setting-model-select');
+                const customModelInput = document.getElementById('setting-custom-model');
+                const customWrapper = document.getElementById('custom-model-wrapper');
+
+                if (data.openrouter_api_key) {
+                    keyInput.value = data.openrouter_api_key;
+                    keyInput.dataset.original = data.openrouter_api_key;
+                }
+
+                if (data.gemini_api_key) {
+                    geminiInput.value = data.gemini_api_key;
+                }
+
+                // Handle model selection
+                let matched = false;
+                for (let i = 0; i < modelSelect.options.length; i++) {
+                    if (modelSelect.options[i].value === data.openrouter_model) {
+                        modelSelect.selectedIndex = i;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched && data.openrouter_model) {
+                    modelSelect.value = 'custom';
+                    customWrapper.classList.remove('hidden');
+                    customModelInput.value = data.openrouter_model;
+                } else {
+                    customWrapper.classList.add('hidden');
+                }
+            }
+        } catch (e) {
+            console.error("Failed to load settings", e);
+        }
+
+        modal.classList.remove('hidden');
+    }
+
+    function closeSettingsModal() {
+        document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    function toggleKeyVisibility(inputId, iconId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(iconId);
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+        }
+    }
+
+    function handleModelChange(val) {
+        const wrapper = document.getElementById('custom-model-wrapper');
+        if (val === 'custom') {
+            wrapper.classList.remove('hidden');
+        } else {
+            wrapper.classList.add('hidden');
+        }
+    }
+
+    async function testSettingsKey() {
+        const keyInput = document.getElementById('setting-openrouter-key');
+        const statusEl = document.getElementById('key-test-status');
+        statusEl.classList.remove('hidden', 'text-green-400', 'text-rose-400', 'text-amber-400');
+        statusEl.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Checking key with OpenRouter...';
+
+        const keyVal = keyInput.value.trim();
+
+        try {
+            const resp = await fetch('/api/settings/test-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_key: keyVal })
+            });
+            const data = await resp.json();
+
+            if (data.valid) {
+                const tierInfo = data.is_free_tier ? "Free Tier" : "Credit Balance Available";
+                statusEl.className = 'text-[11px] text-green-400 flex items-center gap-1.5';
+                statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> <b>Valid Key:</b> ${data.label} (${tierInfo})`;
+            } else {
+                statusEl.className = 'text-[11px] text-rose-400 flex items-center gap-1.5';
+                statusEl.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> ${data.error || "Key validation failed"}`;
+            }
+        } catch (err) {
+            statusEl.className = 'text-[11px] text-rose-400 flex items-center gap-1.5';
+            statusEl.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> Network error: ${err.message}`;
+        }
+    }
+
+    async function saveSettings(e) {
+        e.preventDefault();
+        const keyInput = document.getElementById('setting-openrouter-key');
+        const geminiInput = document.getElementById('setting-gemini-key');
+        const modelSelect = document.getElementById('setting-model-select');
+        const customModelInput = document.getElementById('setting-custom-model');
+        const btn = document.getElementById('save-settings-btn');
+        const banner = document.getElementById('settings-status-banner');
+
+        let chosenModel = modelSelect.value;
+        if (chosenModel === 'custom') {
+            chosenModel = customModelInput.value.trim() || 'minimax/minimax-m3:free';
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Saving...';
+
+        try {
+            const resp = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    openrouter_api_key: keyInput.value.trim(),
+                    openrouter_model: chosenModel,
+                    gemini_api_key: geminiInput.value.trim(),
+                })
+            });
+
+            const data = await resp.json();
+            if (resp.ok) {
+                banner.className = 'p-2.5 rounded-xl text-xs bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center gap-2';
+                banner.innerHTML = '<i class="fa-solid fa-check"></i> ' + (data.message || 'Settings saved successfully!');
+                banner.classList.remove('hidden');
+
+                setTimeout(() => {
+                    closeSettingsModal();
+                }, 900);
+            } else {
+                banner.className = 'p-2.5 rounded-xl text-xs bg-rose-500/15 border border-rose-500/30 text-rose-300 flex items-center gap-2';
+                banner.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + (data.detail || 'Failed to save settings');
+                banner.classList.remove('hidden');
+            }
+        } catch (err) {
+            banner.className = 'p-2.5 rounded-xl text-xs bg-rose-500/15 border border-rose-500/30 text-rose-300 flex items-center gap-2';
+            banner.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + err.message;
+            banner.classList.remove('hidden');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Settings';
+        }
+    }
+</script>
