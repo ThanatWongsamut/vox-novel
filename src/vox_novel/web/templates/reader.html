@@ -54,6 +54,72 @@
                 {% endif %}
             </header>
 
+            <!-- VoxCPM2 Audiobook Player Container -->
+            <div id="audio-widget-container" class="mb-8">
+                {% if audio_url %}
+                <!-- Active Audio Player -->
+                <div id="active-audio-player" class="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-4 shadow-xl space-y-3">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-8 h-8 rounded-xl bg-purple-500/20 text-purple-300 flex items-center justify-center text-sm shadow-inner">
+                                <i class="fa-solid fa-headphones"></i>
+                            </span>
+                            <div>
+                                <h4 class="text-xs font-semibold text-white">VoxCPM2 Thai Audiobook</h4>
+                                <p class="text-[10px] text-slate-400">48kHz Tokenizer-Free Synthesis</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <select id="audio-speed" onchange="changeAudioSpeed(this.value)" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-300 focus:outline-none">
+                                <option value="0.75">0.75x</option>
+                                <option value="1.0" selected>1.0x</option>
+                                <option value="1.25">1.25x</option>
+                                <option value="1.5">1.5x</option>
+                                <option value="2.0">2.0x</option>
+                            </select>
+                            <button onclick="startAudioSynthesis()" title="Re-synthesize Audio" class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition text-xs">
+                                <i class="fa-solid fa-rotate-right"></i>
+                            </button>
+                            <a href="{{ audio_url }}" download class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition text-xs" title="Download Audio">
+                                <i class="fa-solid fa-download"></i>
+                            </a>
+                        </div>
+                    </div>
+
+                    <audio id="audio-element" src="{{ audio_url }}" preload="metadata"></audio>
+
+                    <!-- Player Controls -->
+                    <div class="flex items-center gap-3">
+                        <button id="play-pause-btn" onclick="toggleAudioPlay()" class="w-10 h-10 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-purple-600/30 transition shrink-0">
+                            <i id="play-pause-icon" class="fa-solid fa-play text-sm ml-0.5"></i>
+                        </button>
+                        <div class="flex-1 space-y-1">
+                            <div class="relative w-full h-2 bg-slate-800 rounded-full overflow-hidden cursor-pointer" onclick="seekAudio(event)">
+                                <div id="audio-progress-bar" class="bg-gradient-to-r from-purple-500 to-indigo-400 h-full w-0 transition-all duration-100 rounded-full"></div>
+                            </div>
+                            <div class="flex justify-between text-[10px] text-slate-400 font-mono">
+                                <span id="audio-current-time">0:00</span>
+                                <span id="audio-duration">0:00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <!-- Generate Audio Card -->
+                <div id="generate-audio-card" class="bg-gradient-to-r from-purple-950/40 via-indigo-950/40 to-slate-900 border border-purple-500/30 rounded-2xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+                    <div class="space-y-1 text-center sm:text-left">
+                        <h4 class="text-xs font-bold text-white flex items-center justify-center sm:justify-start gap-2">
+                            <i class="fa-solid fa-volume-high text-pink-400"></i> VoxCPM2 Thai Audiobook
+                        </h4>
+                        <p class="text-[11px] text-slate-400">Synthesize chapter text into natural Thai speech using Prompt-to-Voice design.</p>
+                    </div>
+                    <button onclick="startAudioSynthesis()" id="generate-audio-btn" class="px-5 py-2.5 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-pink-600/25 flex items-center gap-2 shrink-0">
+                        <i class="fa-solid fa-headphones"></i> Generate Audiobook
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+
             <div class="space-y-4 text-slate-200">
                 {% for p in chapter.paragraphs %}
                 <p class="reader-p leading-relaxed">{{ p.translated_text or p.text }}</p>
@@ -79,6 +145,233 @@
             </footer>
         </article>
     </main>
+
+    <!-- Fullscreen SSE Loading Overlay for Audio Synthesis -->
+    <div id="audio-synthesis-overlay" class="fixed inset-0 bg-slate-950/95 z-50 flex items-center justify-center p-6 hidden">
+        <div class="bg-slate-900 border border-slate-700/80 rounded-3xl p-8 max-w-md w-full shadow-2xl text-center space-y-6 transform-gpu">
+            <div id="audio-synth-active-box" class="space-y-6">
+                <div class="relative w-20 h-20 mx-auto transform-gpu">
+                    <div class="absolute inset-0 rounded-full border-4 border-pink-500/20"></div>
+                    <div class="absolute inset-0 rounded-full border-4 border-pink-500 border-t-transparent animate-spin" style="will-change: transform;"></div>
+                    <div class="absolute inset-0 flex items-center justify-center text-2xl">🎙️</div>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 class="text-base font-bold text-white tracking-wide">
+                        Generating Thai Audiobook...
+                    </h3>
+                    <p id="audio-synth-step" class="text-xs text-pink-300 font-medium">
+                        Initializing VoxCPM2 synthesis engine...
+                    </p>
+                </div>
+
+                <!-- Live Progress Bar -->
+                <div class="space-y-1.5">
+                    <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700/50">
+                        <div id="audio-synth-bar" class="bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-400 h-2.5 rounded-full transition-all duration-300 w-[5%]"></div>
+                    </div>
+                    <div class="flex justify-between text-[11px] text-slate-400">
+                        <span id="audio-synth-pct">5%</span>
+                        <span>VoxCPM2 • 48kHz</span>
+                    </div>
+                </div>
+
+                <p class="text-[11px] text-slate-500 italic">
+                    Stitching chapter paragraph voices with natural pauses
+                </p>
+            </div>
+
+            <!-- Error State Box -->
+            <div id="audio-synth-error-box" class="hidden space-y-5">
+                <div class="w-16 h-16 mx-auto rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 text-2xl">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div class="space-y-2">
+                    <h3 class="text-base font-bold text-white tracking-wide">Synthesis Error</h3>
+                    <div id="audio-synth-error-msg" class="text-xs text-slate-300 bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 text-left font-mono"></div>
+                </div>
+                <div class="flex justify-center gap-2">
+                    <button onclick="startAudioSynthesis()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition">
+                        Retry
+                    </button>
+                    <button onclick="hideAudioOverlay()" class="px-3.5 py-2 bg-slate-800 text-slate-400 hover:text-white text-xs rounded-xl transition">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     {% include "settings_modal.html" %}
+
+    <script>
+        const seriesId = "{{ chapter.book_id }}";
+        const chapterId = "{{ chapter.id }}";
+        let audioEvtSource = null;
+
+        const audioEl = document.getElementById('audio-element');
+        const playBtn = document.getElementById('play-pause-btn');
+        const playIcon = document.getElementById('play-pause-icon');
+        const progressBar = document.getElementById('audio-progress-bar');
+        const curTimeEl = document.getElementById('audio-current-time');
+        const durEl = document.getElementById('audio-duration');
+
+        if (audioEl) {
+            audioEl.addEventListener('timeupdate', () => {
+                if (audioEl.duration) {
+                    const pct = (audioEl.currentTime / audioEl.duration) * 100;
+                    progressBar.style.width = pct + '%';
+                    curTimeEl.innerText = formatTime(audioEl.currentTime);
+                }
+            });
+
+            audioEl.addEventListener('loadedmetadata', () => {
+                durEl.innerText = formatTime(audioEl.duration);
+            });
+
+            audioEl.addEventListener('ended', () => {
+                playIcon.className = 'fa-solid fa-play text-sm ml-0.5';
+            });
+        }
+
+        function formatTime(seconds) {
+            if (isNaN(seconds)) return "0:00";
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        }
+
+        function toggleAudioPlay() {
+            if (!audioEl) return;
+            if (audioEl.paused) {
+                audioEl.play();
+                playIcon.className = 'fa-solid fa-pause text-sm';
+            } else {
+                audioEl.pause();
+                playIcon.className = 'fa-solid fa-play text-sm ml-0.5';
+            }
+        }
+
+        function changeAudioSpeed(speed) {
+            if (audioEl) {
+                audioEl.playbackRate = parseFloat(speed);
+            }
+        }
+
+        function seekAudio(e) {
+            if (!audioEl || !audioEl.duration) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const clickPos = (e.clientX - rect.left) / rect.width;
+            audioEl.currentTime = clickPos * audioEl.duration;
+        }
+
+        function hideAudioOverlay() {
+            if (audioEvtSource) {
+                audioEvtSource.close();
+                audioEvtSource = null;
+            }
+            document.getElementById('audio-synthesis-overlay').classList.add('hidden');
+        }
+
+        async function startAudioSynthesis() {
+            const overlay = document.getElementById('audio-synthesis-overlay');
+            const activeBox = document.getElementById('audio-synth-active-box');
+            const errorBox = document.getElementById('audio-synth-error-box');
+            const stepEl = document.getElementById('audio-synth-step');
+            const bar = document.getElementById('audio-synth-bar');
+            const pctText = document.getElementById('audio-synth-pct');
+
+            activeBox.classList.remove('hidden');
+            errorBox.classList.add('hidden');
+            bar.style.width = '5%';
+            pctText.innerText = '5%';
+            stepEl.innerText = 'Connecting to VoxCPM2 synthesis engine...';
+            overlay.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('series_id', seriesId);
+            formData.append('chapter_id', chapterId);
+            formData.append('engine', 'voxcpm2');
+
+            try {
+                const resp = await fetch('/api/synthesize-chapter', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    showAudioSynthError(`Failed to start synthesis (${resp.status}): ${text}`);
+                    return;
+                }
+
+                const data = await resp.json();
+                if (data.job_id) {
+                    listenAudioSSE(data.job_id);
+                }
+            } catch (err) {
+                showAudioSynthError(err.message);
+            }
+        }
+
+        function showAudioSynthError(msg) {
+            const activeBox = document.getElementById('audio-synth-active-box');
+            const errorBox = document.getElementById('audio-synth-error-box');
+            const msgEl = document.getElementById('audio-synth-error-msg');
+            activeBox.classList.add('hidden');
+            errorBox.classList.remove('hidden');
+            msgEl.innerText = msg;
+        }
+
+        function listenAudioSSE(jobId) {
+            const stepEl = document.getElementById('audio-synth-step');
+            const bar = document.getElementById('audio-synth-bar');
+            const pctText = document.getElementById('audio-synth-pct');
+
+            if (audioEvtSource) {
+                audioEvtSource.close();
+            }
+
+            audioEvtSource = new EventSource('/api/progress/' + jobId);
+
+            audioEvtSource.onmessage = function(event) {
+                try {
+                    const job = JSON.parse(event.data);
+                    if (job.progress !== undefined) {
+                        bar.style.width = job.progress + '%';
+                        pctText.innerText = job.progress + '%';
+                    }
+                    if (job.message) {
+                        stepEl.innerText = job.message;
+                    }
+                    if (job.status === 'completed') {
+                        audioEvtSource.close();
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 800);
+                    } else if (job.status === 'failed') {
+                        audioEvtSource.close();
+                        showAudioSynthError(job.error || "Audio synthesis failed.");
+                    }
+                } catch (e) {
+                    console.error("SSE parse error", e);
+                }
+            };
+
+            audioEvtSource.onerror = function(err) {
+                console.error("SSE error", err);
+            };
+        }
+
+        // Spacebar toggles audio when not typing in an input
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                if (audioEl) {
+                    e.preventDefault();
+                    toggleAudioPlay();
+                }
+            }
+        });
+    </script>
 </body>
 </html>

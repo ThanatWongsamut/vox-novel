@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 from vox_novel.models.domain import Chapter, Novel
 from vox_novel.models.series_knowledge import SeriesKnowledge
 from vox_novel.scrapers.registry import registry as default_scraper_registry
@@ -7,6 +7,7 @@ from vox_novel.storage.file import StorageManager
 from vox_novel.storage.knowledge import KnowledgeManager
 from vox_novel.translators.openrouter import OpenRouterTranslator
 from vox_novel.translators.registry import translator_registry
+from vox_novel.tts.registry import tts_registry
 
 
 class NovelPipeline:
@@ -114,3 +115,43 @@ class NovelPipeline:
 
         self.storage.save_chapter(chapter)
         return chapter
+
+    async def synthesize_chapter_audio(
+        self,
+        series_id: str,
+        chapter_id: str,
+        engine_name: str = "voxcpm2",
+        voice_description: Optional[str] = None,
+        reference_audio: Optional[Path] = None,
+        progress_callback: Optional[Callable[[int, str], Any]] = None,
+        engine_kwargs: Optional[dict] = None,
+    ) -> Path:
+        """Synthesize chapter text into master audio using the selected TTS engine."""
+        chapter = self.storage.get_chapter(series_id, chapter_id)
+        if not chapter:
+            raise ValueError(f"Chapter '{chapter_id}' not found in series '{series_id}'")
+
+        knowledge = self.knowledge.load_or_init(series_id)
+        narrator_desc = voice_description or knowledge.narrator_voice_description
+        ref_audio = reference_audio or (
+            Path(knowledge.narrator_voice_ref_audio)
+            if knowledge.narrator_voice_ref_audio and Path(knowledge.narrator_voice_ref_audio).exists()
+            else None
+        )
+
+        kwargs = engine_kwargs or {}
+        tts_engine = tts_registry.get_tts(engine_name, **kwargs)
+
+        output_dir = self.storage.base_dir / series_id / "chapters"
+        audio_path = await tts_engine.synthesize_chapter(
+            chapter=chapter,
+            output_dir=output_dir,
+            use_translated=True,
+            voice_description=narrator_desc,
+            reference_audio=ref_audio,
+            progress_callback=progress_callback,
+        )
+
+        chapter.audio_path = str(audio_path)
+        self.storage.save_chapter(chapter)
+        return audio_path

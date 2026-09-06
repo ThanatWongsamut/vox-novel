@@ -107,6 +107,45 @@ class StorageManager:
             f.write(novel.model_dump_json(indent=2))
         return meta_file
 
+    def get_voices_dir(self, series_id: str) -> Path:
+        voices_dir = self.base_dir / series_id / "voices"
+        voices_dir.mkdir(parents=True, exist_ok=True)
+        return voices_dir
+
+    def get_chapter(self, series_id: str, chapter_id: str) -> Optional[Chapter]:
+        chapters_dir = self.base_dir / series_id / "chapters"
+        if not chapters_dir.exists():
+            return None
+        for jf in chapters_dir.glob("*.json"):
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("id") == chapter_id:
+                        return Chapter.model_validate(data)
+            except Exception:
+                pass
+        return None
+
+    def get_chapter_audio_file(self, series_id: str, chapter_id: str) -> Optional[Path]:
+        chapters_dir = self.base_dir / series_id / "chapters"
+        if not chapters_dir.exists():
+            return None
+        # Check standard chapter_<id>.wav
+        p1 = chapters_dir / f"chapter_{chapter_id}.wav"
+        if p1.exists():
+            return p1
+        p1_mp3 = chapters_dir / f"chapter_{chapter_id}.mp3"
+        if p1_mp3.exists():
+            return p1_mp3
+        # Check matching prefix.wav
+        for wf in chapters_dir.glob("*.wav"):
+            if chapter_id in wf.stem:
+                return wf
+        for mf in chapters_dir.glob("*.mp3"):
+            if chapter_id in mf.stem:
+                return mf
+        return None
+
     def get_translated_chapter_ids(self, series_id: str, target_lang: str = "th") -> Dict[str, dict]:
         novel_dir = self.base_dir / series_id
         chapters_dir = novel_dir / "chapters"
@@ -118,14 +157,21 @@ class StorageManager:
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    cid = data.get("id")
                     if data.get("target_language") == target_lang or data.get("translated_title"):
-                        translated[data["id"]] = {
+                        has_audio = (
+                            (chapters_dir / f"chapter_{cid}.wav").exists()
+                            or (chapters_dir / f"{json_file.stem}.wav").exists()
+                            or bool(data.get("audio_path") and Path(data["audio_path"]).exists())
+                        )
+                        translated[cid] = {
                             "title": data.get("translated_title") or data.get("title"),
                             "original_title": data.get("title"),
                             "target_language": data.get("target_language"),
                             "chapter_number": data.get("chapter_number"),
                             "json_path": str(json_file),
                             "md_path": str(json_file.with_suffix(".md")),
+                            "has_audio": has_audio,
                         }
             except Exception:
                 pass

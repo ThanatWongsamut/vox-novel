@@ -96,15 +96,22 @@
                                 {% endif %}
                             </td>
                             <td class="py-3 px-4">
-                                {% if is_trans %}
-                                <span class="inline-flex items-center gap-1 text-green-400 bg-green-500/10 px-2 py-0.5 rounded border border-green-500/20 text-[11px]">
-                                    <i class="fa-solid fa-check text-[10px]"></i> Translated
-                                </span>
-                                {% else %}
-                                <span class="inline-flex items-center gap-1 text-slate-400 bg-slate-700/40 px-2 py-0.5 rounded text-[11px]">
-                                    <i class="fa-solid fa-clock text-[10px]"></i> Pending
-                                </span>
-                                {% endif %}
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    {% if is_trans %}
+                                    <span class="inline-flex items-center gap-1 text-green-400 bg-green-500/10 px-2 py-0.5 rounded border border-green-500/20 text-[11px]">
+                                        <i class="fa-solid fa-check text-[10px]"></i> Translated
+                                    </span>
+                                    {% if translated_map[ch.id] and translated_map[ch.id].has_audio %}
+                                    <span class="inline-flex items-center gap-1 text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20 text-[11px]" title="VoxCPM2 Audiobook generated">
+                                        <i class="fa-solid fa-headphones text-[10px]"></i> Audio
+                                    </span>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="inline-flex items-center gap-1 text-slate-400 bg-slate-700/40 px-2 py-0.5 rounded text-[11px]">
+                                        <i class="fa-solid fa-clock text-[10px]"></i> Pending
+                                    </span>
+                                    {% endif %}
+                                </div>
                             </td>
                             <td class="py-3 px-4 text-right space-x-2">
                                 {% if is_trans %}

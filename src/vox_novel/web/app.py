@@ -44,6 +44,19 @@ async def get_cover(series_id: str):
     raise HTTPException(status_code=404, detail="Cover not found")
 
 
+@web_app.api_route("/api/audio/{series_id}/{chapter_id}", methods=["GET", "HEAD"])
+async def get_chapter_audio(series_id: str, chapter_id: str):
+    audio_file = storage.get_chapter_audio_file(series_id, chapter_id)
+    if not audio_file or not audio_file.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    media_type = "audio/mpeg" if audio_file.suffix.lower() == ".mp3" else "audio/wav"
+    return FileResponse(
+        audio_file,
+        media_type=media_type,
+        headers={"Accept-Ranges": "bytes"}
+    )
+
+
 @web_app.get("/explore", response_class=HTMLResponse)
 async def explore_novels(request: Request, q: Optional[str] = None):
     from vox_novel.scrapers.webnovel import search_webnovel, browse_webnovel
@@ -373,6 +386,9 @@ async def read_chapter(request: Request, series_id: str, chapter_id: str):
             if idx < len(trans_ids) - 1:
                 next_chap_id = trans_ids[idx + 1]
 
+    audio_file = storage.get_chapter_audio_file(series_id, chapter_id)
+    audio_url = f"/api/audio/{series_id}/{chapter_id}" if (audio_file and audio_file.exists()) else None
+
     return templates.TemplateResponse(
         request=request,
         name="reader.html",
@@ -380,8 +396,54 @@ async def read_chapter(request: Request, series_id: str, chapter_id: str):
             "chapter": chapter,
             "prev_chap_id": prev_chap_id,
             "next_chap_id": next_chap_id,
+            "audio_url": audio_url,
         },
     )
+
+
+@web_app.post("/api/synthesize-chapter")
+async def synthesize_chapter_endpoint(
+    series_id: str = Form(...),
+    chapter_id: str = Form(...),
+    engine: str = Form("voxcpm2"),
+    voice: Optional[str] = Form(None),
+):
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "starting",
+        "progress": 5,
+        "message": "Initializing VoxCPM2 TTS...",
+        "redirect_url": None,
+        "audio_url": None,
+        "error": None,
+    }
+
+    async def _run_job():
+        try:
+            async def progress_cb(pct: int, msg: str):
+                if job_id in JOBS:
+                    JOBS[job_id]["progress"] = pct
+                    JOBS[job_id]["message"] = msg
+
+            await progress_cb(10, "Preparing chapter text for VoxCPM2...")
+            audio_path = await pipeline.synthesize_chapter_audio(
+                series_id=series_id,
+                chapter_id=chapter_id,
+                engine_name=engine,
+                voice_description=voice,
+                progress_callback=progress_cb,
+            )
+            JOBS[job_id]["progress"] = 100
+            JOBS[job_id]["status"] = "completed"
+            JOBS[job_id]["message"] = "Audiobook generation complete!"
+            JOBS[job_id]["audio_url"] = f"/api/audio/{series_id}/{chapter_id}"
+        except Exception as e:
+            if job_id in JOBS:
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["error"] = str(e)
+
+    asyncio.create_task(_run_job())
+    return {"job_id": job_id, "status": "started"}
 
 
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
