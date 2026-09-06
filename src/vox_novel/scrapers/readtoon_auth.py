@@ -128,6 +128,13 @@ class ReadtoonAuthManager:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto("https://readtoon.com/auth/sign-in")
 
+                # Bring Google Chrome window directly to the front on macOS
+                try:
+                    import subprocess
+                    subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'], capture_output=True)
+                except Exception:
+                    pass
+
                 self.message = "Chrome window is open. Please log into your ReadToon account in Chrome..."
                 start_time = time.time()
                 logged_in = None

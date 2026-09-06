@@ -226,18 +226,24 @@ class ReadtoonScraper(BaseScraper):
 
                 page = context.pages[0] if context.pages else await context.new_page()
 
-                # Load storage state / cookies into context (applies to both persistent and fresh contexts)
+                st_auth = ""
+                st_dev = ""
                 storage_file = profile_dir / "storage_state.json"
                 if storage_file.exists():
                     try:
                         st = json.loads(storage_file.read_text(encoding="utf-8"))
                         if "cookies" in st and st["cookies"]:
                             await context.add_cookies(st["cookies"])
+                            for c in st["cookies"]:
+                                if c.get("name") == "auth_token":
+                                    st_auth = c.get("value", "")
+                                elif c.get("name") == "device_token":
+                                    st_dev = c.get("value", "")
                     except Exception:
                         pass
 
-                auth_token = (self.auth_token or os.getenv("READTOON_AUTH_TOKEN", "")).strip()
-                device_token = os.getenv("READTOON_DEVICE_TOKEN", "").strip()
+                auth_token = (self.auth_token or st_auth or os.getenv("READTOON_AUTH_TOKEN", "")).strip()
+                device_token = (st_dev or os.getenv("READTOON_DEVICE_TOKEN", "")).strip()
                 cookie_str = os.getenv("READTOON_COOKIE", "").strip()
 
                 cookies_to_add = []

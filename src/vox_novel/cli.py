@@ -668,6 +668,12 @@ def login_cmd(
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto("https://readtoon.com/auth/sign-in")
 
+            try:
+                import subprocess
+                subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'], capture_output=True)
+            except Exception:
+                pass
+
             start_time = time.time()
             logged_in_user = None
 
