@@ -88,6 +88,187 @@ class VoxCPM2TTS(BaseTTS):
                 self._warned_local = True
             return None
 
+    @staticmethod
+    def build_control_prompt(voice_description: Optional[str], emotion: Optional[str] = None) -> str:
+        """
+        Translate and normalize natural language voice descriptions (Thai/English) into
+        concise, highly effective English control instructions for VoxCPM2 / MiniCPM-based voice design.
+        """
+        raw = f"{voice_description or ''} {emotion or ''}".strip()
+        if not raw:
+            return "natural articulate narrator"
+
+        clean_text = raw
+
+        # 1. Extract age
+        age_str = None
+        age_match = re.search(r"อายุ\s*(?:ย่างเข้า|ประมาณ|ราวๆ|ราว)?\s*(\d{1,2})\s*(?:ปี)?", clean_text)
+        if not age_match:
+            age_match = re.search(r"วัย\s*(\d{1,2})\s*(?:ปี)?", clean_text)
+        if not age_match:
+            age_match = re.search(r"\b(\d{1,2})\s*[- ]*(?:years?|yr)?[- ]*(?:old|yo)\b", clean_text, re.I)
+        if not age_match:
+            age_match = re.search(r"\b(\d{1,2})\s*ปี\b", clean_text)
+        if age_match:
+            age_val = int(age_match.group(1))
+            if 5 <= age_val <= 100:
+                age_str = f"{age_val}-year-old"
+
+        # 2. Gender & Persona mapping
+        text_no_narrate = clean_text.replace("บรรยาย", " ")
+        female_keys = [
+            "ผู้หญิง", "เพศหญิง", "หญิงสาว", "หญิง", "สาว", "กุลสตรี", "กลุสตรี",
+            "คุณหนู", "เด็กสาว", "สาวน้อย", "สตรี", "นางสาว", "คุณยาย", "หญิงชรา",
+            "คุณแม่", "มารดา", "แม่เฒ่า"
+        ]
+        male_keys = [
+            "ผู้ชาย", "เพศชาย", "ชายหนุ่ม", "ชาย", "หนุ่ม", "สุภาพบุรุษ", "คุณชาย",
+            "เด็กหนุ่ม", "หนุ่มน้อย", "บุรุษ", "คุณตา", "คุณปู่", "คุณลุง", "คุณพ่อ",
+            "บิดา", "ชายชรา", "พ่อเฒ่า"
+        ]
+
+        has_female = any(k in text_no_narrate for k in female_keys) or bool(
+            re.search(r"\b(?:female|woman|girl|lady)\b", clean_text, re.I)
+        )
+        has_male = any(k in text_no_narrate for k in male_keys) or bool(
+            re.search(r"\b(?:male|man|boy|gentleman)\b", clean_text, re.I)
+        )
+
+        gender = None
+        if has_female and not has_male:
+            gender = "female"
+        elif has_male and not has_female:
+            gender = "male"
+
+        is_narrator = any(k in clean_text for k in ["ผู้บรรยาย", "คนเล่า", "เล่าเรื่อง", "บรรยาย"]) or bool(
+            re.search(r"\bnarrat(?:or|ion)\b", clean_text, re.I)
+        )
+
+        traits: List[str] = []
+
+        # Personas / Archetypes
+        if any(k in clean_text for k in ["คุณหนู"]):
+            traits.append("noble lady")
+        if any(k in clean_text for k in ["กุลสตรี", "กลุสตรี"]):
+            traits.append("elegant gentlewoman")
+        if any(k in clean_text for k in ["คุณชาย", "สุภาพบุรุษ"]):
+            traits.append("noble gentleman")
+        if any(k in clean_text for k in ["เด็กสาว", "สาวน้อย"]):
+            traits.append("young girl")
+        if any(k in clean_text for k in ["เด็กหนุ่ม", "หนุ่มน้อย"]):
+            traits.append("young boy")
+        if any(k in clean_text for k in ["เด็ก", "เด็กน้อย"]):
+            traits.append("child")
+        if any(k in clean_text for k in ["คนชรา", "คนแก่", "สูงวัย", "ชรา"]):
+            traits.append("elderly")
+        if any(k in clean_text for k in ["วัยรุ่น"]):
+            traits.append("teenager")
+
+        # Tone / Timbre / Emotion
+        if any(k in clean_text for k in ["เย็น", "เยือกเย็น", "ยะเยือก"]):
+            traits.append("cool, calm")
+        if any(k in clean_text for k in ["ลึกลับ"]):
+            traits.append("mysterious")
+        if any(k in clean_text for k in ["น่าหลงใหล", "มีเสน่ห์", "ตรึงใจ", "เย้ายวน", "เซ็กซี่"]):
+            traits.append("enchanting, charming")
+        if "นุ่มลึก" in clean_text or "ทุ้มลึก" in clean_text:
+            traits.append("soft and deep")
+        elif re.search(r"(?<!ห)นุ่ม", clean_text) or "ละมุน" in clean_text or "นุ่มนวล" in clean_text:
+            traits.append("soft, gentle")
+        if any(k in clean_text for k in ["เสียงทุ้ม", "ทุ้ม"]) and "ทุ้มลึก" not in clean_text:
+            traits.append("deep voice")
+        if any(k in clean_text for k in ["อ่อนโยน"]):
+            traits.append("gentle")
+        if any(k in clean_text for k in ["ชัดถ้อยชัดคำ", "ชัดเจน", "ฉะฉาน"]):
+            traits.append("articulate, clear")
+        if any(k in clean_text for k in ["หวาน", "เสียงหวาน", "หวานใส"]):
+            traits.append("sweet melodic")
+        if any(k in clean_text for k in ["เสียงใส", "กังวาน"]):
+            traits.append("crisp, clear")
+        if any(k in clean_text for k in ["สดใส", "ร่าเริง"]):
+            traits.append("bright, cheerful")
+        if any(k in clean_text for k in ["มีชีวิตชีวา"]):
+            traits.append("lively")
+        if any(k in clean_text for k in ["ขี้เล่น", "ซุกซน"]):
+            traits.append("playful")
+        if any(k in clean_text for k in ["สง่างาม", "สุขุม"]):
+            traits.append("dignified, elegant")
+        if any(k in clean_text for k in ["อบอุ่น"]):
+            traits.append("warm")
+        if any(k in clean_text for k in ["มั่นใจ", "หนักแน่น"]):
+            traits.append("confident")
+        if any(k in clean_text for k in ["เข้มขรึม", "เคร่งขรึม"]):
+            traits.append("serious, solemn")
+        if any(k in clean_text for k in ["ห้าว", "ดุดัน", "แข็งกร้าว"]):
+            traits.append("husky, fierce")
+        if any(k in clean_text for k in ["ทรงพลัง", "มีอำนาจ", "น่าเกรงขาม"]):
+            traits.append("authoritative, commanding")
+        if any(k in clean_text for k in ["แฟนตาซี"]):
+            traits.append("fantasy storytelling")
+        if any(k in clean_text for k in ["เศร้า", "หม่นหมอง", "โศกเศร้า"]):
+            traits.append("melancholic, sad")
+        if any(k in clean_text for k in ["โกรธ", "ฉุนเฉียว", "ดุ"]):
+            traits.append("angry")
+        if any(k in clean_text for k in ["ตื่นเต้น", "ลุ้นระทึก"]):
+            traits.append("suspenseful")
+        if any(k in clean_text for k in ["ตื่นตระหนก", "กลัว"]):
+            traits.append("fearful")
+        if any(k in clean_text for k in ["กระซิบ"]):
+            traits.append("whispering")
+        if any(k in clean_text for k in ["น่ารัก"]):
+            traits.append("cute")
+        if any(k in clean_text for k in ["ใจดี"]):
+            traits.append("kind")
+        if any(k in clean_text for k in ["เป็นมิตร"]):
+            traits.append("friendly")
+        if any(k in clean_text for k in ["เป็นธรรมชาติ"]):
+            traits.append("natural")
+
+        # Include explicit English tokens (length >= 3)
+        eng_tokens = re.findall(r"[a-zA-Z]{3,}", clean_text)
+        ignored_eng = {
+            "female", "male", "narrator", "voice", "years", "year",
+            "old", "with", "and", "the", "for", "from", "that", "this"
+        }
+        for w in eng_tokens:
+            lw = w.lower()
+            if lw not in ignored_eng:
+                traits.append(lw)
+
+        parts = []
+        if age_str:
+            parts.append(age_str)
+        if gender:
+            parts.append(gender)
+        if is_narrator:
+            parts.append("narrator")
+        else:
+            parts.append("voice")
+
+        core = " ".join(parts)
+
+        unique_traits = []
+        seen = set()
+        for t in traits:
+            for sub in t.split(","):
+                sub = sub.strip()
+                if sub and sub not in seen and sub not in core:
+                    seen.add(sub)
+                    unique_traits.append(sub)
+
+        if unique_traits:
+            return f"{core}, " + ", ".join(unique_traits)
+        return core
+
+    @staticmethod
+    def format_designed_text(text: str, control: Optional[str]) -> str:
+        control_clean = (control or "").strip()
+        if not control_clean:
+            return text
+        if text.startswith("(") and ")" in text:
+            return text
+        return f"({control_clean}){text}"
+
     async def _call_remote_api(
         self,
         text: str,
@@ -105,17 +286,16 @@ class VoxCPM2TTS(BaseTTS):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        # Combine voice description and emotion into control prompt
-        control_prompt = voice_description or "เสียงบรรยายภาษาไทย นุ่มนวล ชัดเจน มีชีวิตชีวา"
-        if emotion:
-            control_prompt += f", อารมณ์: {emotion}"
+        control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
+        designed_text = self.format_designed_text(text, control_prompt)
 
         payload: dict[str, Any] = {
             "model": self.model_name,
-            "input": text,
-            "text": text,
+            "input": designed_text,
+            "text": designed_text,
             "voice": control_prompt,
             "control": control_prompt,
+            "cfg_value": 2.5 if not reference_audio else 2.0,
             "response_format": "wav",
         }
 
@@ -175,6 +355,8 @@ class VoxCPM2TTS(BaseTTS):
         output_file.parent.mkdir(parents=True, exist_ok=True)
         audio_array = None
 
+        control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
+
         # 1. Try remote API first if configured
         if self.api_url:
             try:
@@ -192,13 +374,18 @@ class VoxCPM2TTS(BaseTTS):
             model = self._get_local_model()
             if model is not None:
                 try:
-                    control_prompt = voice_description or "เสียงผู้บรรยายภาษาไทย ชัดเจน เป็นธรรมชาติ"
-                    if emotion:
-                        control_prompt += f", อารมณ์ {emotion}"
-
-                    kwargs: dict[str, Any] = {"text": text}
+                    kwargs: dict[str, Any] = {}
                     if reference_audio and Path(reference_audio).exists():
                         kwargs["reference_wav_path"] = str(reference_audio)
+                        if emotion:
+                            emotion_ctrl = self.build_control_prompt(None, emotion=emotion)
+                            kwargs["text"] = self.format_designed_text(text, emotion_ctrl)
+                        else:
+                            kwargs["text"] = text
+                    else:
+                        # Voice Design / Prompt-to-Voice mode
+                        kwargs["text"] = self.format_designed_text(text, control_prompt)
+                        kwargs["cfg_value"] = 2.5
 
                     audio_array = await asyncio.to_thread(model.generate, **kwargs)
                     if hasattr(model, "tts_model") and hasattr(model.tts_model, "sample_rate"):
