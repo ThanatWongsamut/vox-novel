@@ -315,7 +315,7 @@ class ReadtoonScraper(BaseScraper):
                     is_insufficient_coins = "เหรียญไม่เพียงพอ" in body_text
                     is_confirm_purchase = any(k in body_text for k in ["ยืนยันการซื้อ", "ยืนยันการซื้อตอน", "ซื้อตอนนี้"])
 
-                    auto_purchase = os.getenv("READTOON_AUTO_PURCHASE", "true").lower() in ("1", "true", "yes")
+                    auto_purchase = os.getenv("READTOON_AUTO_PURCHASE", "false").lower() in ("1", "true", "yes")
 
                     # If user is logged in and purchase confirmation modal is open:
                     if is_confirm_purchase and not is_login_required and not is_insufficient_coins:
