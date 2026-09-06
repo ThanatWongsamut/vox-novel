@@ -1,0 +1,145 @@
+/* VoxNovel Importer Floating Trigger & Toast Styling */
+
+#vox-novel-import-btn {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 999999;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #db2777 100%);
+  color: #ffffff !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Sarabun", sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
+  box-shadow: 0 12px 28px -4px rgba(79, 70, 229, 0.45), 0 8px 12px -6px rgba(124, 58, 237, 0.35);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  text-decoration: none !important;
+}
+
+#vox-novel-import-btn:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 16px 32px -4px rgba(79, 70, 229, 0.6), 0 10px 16px -4px rgba(219, 39, 119, 0.4);
+  filter: brightness(1.08);
+}
+
+#vox-novel-import-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+#vox-novel-import-btn.loading {
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+#vox-novel-import-btn .vox-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: vox-spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+@keyframes vox-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Floating Notification Toast */
+#vox-novel-toast {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 1000000;
+  min-width: 320px;
+  max-width: 440px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #f8fafc;
+  box-shadow: 0 20px 35px -8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Sarabun", sans-serif;
+  font-size: 13.5px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: vox-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+#vox-novel-toast.success {
+  border-color: rgba(34, 197, 94, 0.4);
+  box-shadow: 0 20px 35px -8px rgba(34, 197, 94, 0.25);
+}
+
+#vox-novel-toast.error {
+  border-color: rgba(239, 68, 68, 0.4);
+  box-shadow: 0 20px 35px -8px rgba(239, 68, 68, 0.25);
+}
+
+#vox-novel-toast .vox-toast-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+#vox-novel-toast .vox-toast-header.success {
+  color: #4ade80;
+}
+
+#vox-novel-toast .vox-toast-header.error {
+  color: #f87171;
+}
+
+#vox-novel-toast .vox-toast-body {
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+#vox-novel-toast .vox-toast-action {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+#vox-novel-toast .vox-toast-action:hover {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  transform: translateY(-1px);
+}
+
+@keyframes vox-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

@@ -7,19 +7,29 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-from vox_novel.models.domain import Novel, Chapter
+from vox_novel.models.domain import Novel, Chapter, ChapterSummary, Paragraph
 from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.storage.file import StorageManager
 from vox_novel.storage.knowledge import KnowledgeManager
 
 web_app = FastAPI(title="VoxNovel Web UI")
+
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -142,6 +152,163 @@ async def home(request: Request):
 async def import_novel(url: str = Form(...)):
     novel = await pipeline.scrape_novel(url.strip())
     return RedirectResponse(url=f"/series/{novel.id}", status_code=303)
+
+
+class ExtensionImportRequest(BaseModel):
+    url: str
+    series_id: Optional[str] = None
+    series_title: Optional[str] = None
+    chapter_no: Optional[float] = None
+    chapter_title: Optional[str] = None
+    content: Optional[str] = ""
+    paragraphs: Optional[List[str]] = None
+    cover_url: Optional[str] = None
+    author: Optional[str] = None
+    source: str = "readtoon"
+    source_language: str = "th"
+
+
+@web_app.get("/api/extension/health")
+async def extension_health():
+    """Connectivity verification endpoint for the VoxNovel Chrome Extension."""
+    return {"status": "ok", "app": "vox-novel", "version": "1.0.0"}
+
+
+@web_app.post("/api/extension/import")
+async def extension_import(req: ExtensionImportRequest):
+    """Direct 1-click chapter ingestion endpoint for the Chrome Extension."""
+    url = req.url.strip()
+    series_id = (req.series_id or "").strip()
+    chapter_no = req.chapter_no
+
+    # Extract series_id and chapter_no from url if missing
+    if not series_id:
+        m = re.search(r"/content/([^/?#]+)(?:/(\d+(?:\.\d+)?))?", url)
+        if m:
+            series_id = m.group(1)
+            if chapter_no is None and m.group(2):
+                chapter_no = float(m.group(2))
+        else:
+            series_id = "imported-novel"
+
+    # Extract chapter_no from chapter_title if still None
+    if chapter_no is None and req.chapter_title:
+        m_no = re.search(r"(?:ตอนที่|chapter|ch\.?)\s*(\d+(?:\.\d+)?)", req.chapter_title, re.IGNORECASE)
+        if m_no:
+            chapter_no = float(m_no.group(1))
+
+    # Parse and clean paragraphs
+    raw_paras = []
+    if req.paragraphs and len(req.paragraphs) > 0:
+        raw_paras = req.paragraphs
+    elif req.content:
+        clean_text = re.sub(r"<\s*br\s*/?>", "\n", req.content, flags=re.IGNORECASE)
+        clean_text = re.sub(r"</p>", "\n\n", clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"<[^>]+>", "", clean_text)
+        raw_paras = clean_text.split("\n")
+
+    cleaned_paragraphs = [p.strip() for p in raw_paras if p.strip()]
+    if not cleaned_paragraphs:
+        raise HTTPException(status_code=400, detail="No paragraph content found to import.")
+
+    # Chapter ID
+    if chapter_no is not None:
+        chap_id = str(int(chapter_no)) if chapter_no.is_integer() else str(chapter_no)
+    else:
+        chap_id = str(uuid.uuid4())[:8]
+
+    # Chapter title
+    chap_title = (req.chapter_title or "").strip()
+    if not chap_title:
+        chap_title = (
+            f"ตอนที่ {int(chapter_no)}"
+            if chapter_no is not None and chapter_no.is_integer()
+            else (f"Chapter {chapter_no}" if chapter_no is not None else "Imported Chapter")
+        )
+
+    # Series Title
+    novel_title = (req.series_title or "").strip()
+    if not novel_title:
+        novel_title = series_id.replace("-", " ").title()
+
+    is_th = req.source_language == "th"
+
+    para_objs = [
+        Paragraph(
+            id=str(uuid.uuid4())[:8],
+            index=i,
+            text=p_text,
+            translated_text=p_text if is_th else None,
+            speaker="narrator",
+            speech_type="narration",
+        )
+        for i, p_text in enumerate(cleaned_paragraphs)
+    ]
+
+    chapter = Chapter(
+        id=chap_id,
+        book_id=series_id,
+        title=chap_title,
+        url=url,
+        chapter_number=chapter_no,
+        paragraphs=para_objs,
+        translated_title=chap_title if is_th else None,
+        source_language=req.source_language,
+        target_language="th" if is_th else None,
+        metadata={"source": req.source, "imported_via": "chrome-extension"},
+    )
+
+    storage.save_chapter(chapter, as_markdown=True)
+
+    # Update or create Novel
+    novel = storage.get_novel(series_id)
+    summary_item = ChapterSummary(
+        id=chapter.id,
+        book_id=series_id,
+        title=chapter.title,
+        url=chapter.url,
+        chapter_number=chapter.chapter_number,
+        is_locked=False,
+    )
+
+    if novel:
+        existing_idx = next((i for i, c in enumerate(novel.chapters) if c.id == chapter.id), -1)
+        if existing_idx >= 0:
+            novel.chapters[existing_idx] = summary_item
+        else:
+            novel.chapters.append(summary_item)
+
+        novel.chapters.sort(key=lambda c: c.chapter_number if c.chapter_number is not None else 999999)
+
+        if req.cover_url and not novel.cover_url:
+            novel.cover_url = req.cover_url
+        if req.series_title and (novel.title == series_id.replace("-", " ").title() or not novel.title):
+            novel.title = req.series_title
+
+        storage.save_novel_metadata(novel)
+    else:
+        new_novel = Novel(
+            id=series_id,
+            title=novel_title,
+            url=f"https://readtoon.com/content/{series_id}" if "readtoon" in req.source else url,
+            author=req.author,
+            cover_url=req.cover_url,
+            source=req.source,
+            chapters=[summary_item],
+            metadata={"imported_via": "chrome-extension"},
+        )
+        storage.save_novel_metadata(new_novel)
+
+    return {
+        "status": "success",
+        "message": f"Successfully imported {chap_title}",
+        "series_id": series_id,
+        "chapter_id": chapter.id,
+        "read_url": f"/series/{series_id}/read/{chapter.id}",
+        "series_url": f"/series/{series_id}",
+        "paragraph_count": len(para_objs),
+    }
+
 
 
 @web_app.get("/series/{series_id}", response_class=HTMLResponse)
