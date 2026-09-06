@@ -205,6 +205,21 @@ async def translate_chapter(
             await progress_cb(5, "Scraping raw chapter text...")
             chapter = await pipeline.get_chapter_raw(chapter_url.strip())
 
+            # If chapter is already in target language (e.g. Readtoon is already Thai):
+            if chapter.source_language == target_lang or chapter.source_language == "th":
+                await progress_cb(80, "Content already in Thai. Ingesting chapter...")
+                chap = await pipeline.scrape_and_translate_chapter(
+                    url=chapter_url.strip(),
+                    target_lang=target_lang,
+                    chapter_obj=chapter,
+                    progress_callback=progress_cb,
+                )
+                JOBS[job_id]["progress"] = 100
+                JOBS[job_id]["status"] = "completed"
+                JOBS[job_id]["message"] = "Chapter ingested! Opening reader..."
+                JOBS[job_id]["redirect_url"] = f"/series/{series_id}/read/{chap.id}"
+                return
+
             await progress_cb(10, "Pre-scanning chapter for new characters & entities...")
             new_terms, new_chars, _ = await pipeline.pre_scan_chapter_entities(
                 chapter=chapter,
@@ -213,6 +228,7 @@ async def translate_chapter(
                 model=chosen_model,
                 progress_callback=progress_cb,
             )
+
 
             if new_terms or new_chars:
                 review_id = str(uuid.uuid4())

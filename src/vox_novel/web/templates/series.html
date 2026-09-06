@@ -120,8 +120,14 @@
                                 </a>
                                 {% endif %}
                                 <button onclick="startTranslation('{{ novel.id }}', '{{ ch.url }}', '{{ ch.title }}')" class="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded transition text-[11px] inline-flex items-center gap-1">
-                                    <i class="fa-solid fa-language"></i> {{ 'Re-Translate' if is_trans else 'Translate' }}
+                                    <i class="fa-solid {% if novel.source == 'readtoon' %}fa-cloud-arrow-down{% else %}fa-language{% endif %}"></i>
+                                    {% if novel.source == 'readtoon' %}
+                                        {{ 'Re-Fetch' if is_trans else 'Fetch Chapter' }}
+                                    {% else %}
+                                        {{ 'Re-Translate' if is_trans else 'Translate' }}
+                                    {% endif %}
                                 </button>
+
                             </td>
                         </tr>
                         {% endfor %}

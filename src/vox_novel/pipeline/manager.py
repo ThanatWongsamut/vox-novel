@@ -46,6 +46,9 @@ class NovelPipeline:
             series_id=chapter.book_id, target_lang=target_lang
         )
 
+        if chapter.source_language == target_lang:
+            return [], [], series_knowledge
+
         chosen_model = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
         translator = translator_registry.get_translator(translator_name, model=chosen_model)
         if isinstance(translator, OpenRouterTranslator):
@@ -72,8 +75,25 @@ class NovelPipeline:
     ) -> Chapter:
         chapter = chapter_obj or await self.get_chapter_raw(url)
 
+        # If chapter source language already matches target language (e.g. Readtoon is already Thai):
+        if target_lang and chapter.source_language == target_lang:
+            chapter.target_language = target_lang
+            if not chapter.translated_title:
+                chapter.translated_title = chapter.title
+            for p in chapter.paragraphs:
+                if not p.translated_text:
+                    p.translated_text = p.text
+            if progress_callback:
+                import inspect
+                cb_res = progress_callback(100, "Content already in Thai. Ingested directly!")
+                if inspect.isawaitable(cb_res):
+                    await cb_res
+            self.storage.save_chapter(chapter)
+            return chapter
+
         if target_lang:
             kwargs = translator_kwargs or {}
+
             translator = translator_registry.get_translator(translator_name, **kwargs)
 
             series_knowledge = self.knowledge.load_or_init(

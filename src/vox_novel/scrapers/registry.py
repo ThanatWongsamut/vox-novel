@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional, Type
 from vox_novel.scrapers.base import BaseScraper
 from vox_novel.scrapers.webnovel import WebnovelScraper
+from vox_novel.scrapers.readtoon import ReadtoonScraper
 
 
 class ScraperRegistry:
@@ -23,3 +24,5 @@ class ScraperRegistry:
 # Default global registry pre-populated with built-in scrapers
 registry = ScraperRegistry()
 registry.register(WebnovelScraper)
+registry.register(ReadtoonScraper)
+

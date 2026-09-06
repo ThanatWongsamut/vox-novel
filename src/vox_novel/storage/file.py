@@ -45,9 +45,10 @@ class StorageManager:
             return f"/api/cover/{series_id}"
 
         try:
+            referer = "https://readtoon.com/" if any(k in cover_url.lower() for k in ["nobuild.pro", "readtoon"]) else "https://www.webnovel.com/"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Referer": "https://www.webnovel.com/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "Referer": referer,
             }
             resp = httpx.get(cover_url, headers=headers, timeout=10.0, follow_redirects=True)
             if resp.status_code == 200 and len(resp.content) > 500:
@@ -59,8 +60,12 @@ class StorageManager:
         return cover_url
 
     def get_local_cover_file(self, series_id: str) -> Optional[Path]:
-        p = self.base_dir / series_id / "cover.jpg"
-        return p if p.exists() else None
+        for ext in [".jpg", ".jpeg", ".webp", ".png"]:
+            p = self.base_dir / series_id / f"cover{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        return None
+
 
     def list_saved_series(self) -> List[Novel]:
         novels = []
