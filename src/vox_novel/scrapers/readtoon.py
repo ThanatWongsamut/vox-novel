@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+from pathlib import Path
 from typing import List, Optional
 import httpx
 from bs4 import BeautifulSoup
@@ -23,6 +24,14 @@ class ReadtoonScraper(BaseScraper):
         "Accept-Language": "th,en-US;q=0.9,en;q=0.8",
         "Referer": "https://readtoon.com/",
     }
+
+    @staticmethod
+    def get_profile_dir() -> Path:
+        """Directory where persistent Playwright browser profile is stored."""
+        custom = os.getenv("READTOON_USER_DATA_DIR", "").strip()
+        if custom:
+            return Path(custom).expanduser()
+        return Path.home() / ".vox_novel" / "readtoon_profile"
 
     def __init__(self, auth_token: Optional[str] = None, timeout: float = 25.0):
         self.auth_token = auth_token or os.getenv("READTOON_AUTH_TOKEN", "")
@@ -174,25 +183,48 @@ class ReadtoonScraper(BaseScraper):
 
         chapter_url = f"https://readtoon.com/content/{slug}/{chapter_no}"
 
+        profile_dir = self.get_profile_dir()
+        use_persistent = profile_dir.exists() and any(profile_dir.iterdir())
+
+        browser = None
+        context = None
+
         async with async_playwright() as p:
-            # Prefer system Chrome if available, fallback to bundled chromium
-            browser = None
-            for launch_opts in [{"channel": "chrome", "headless": True}, {"headless": True}]:
-                try:
-                    browser = await p.chromium.launch(**launch_opts)
-                    break
-                except Exception:
-                    continue
-
-            if not browser:
-                raise RuntimeError("Failed to launch Playwright browser (neither Google Chrome nor Chromium available).")
-
             try:
-                context = await browser.new_context(
-                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
-                    viewport={"width": 1280, "height": 800},
-                )
-                page = await context.new_page()
+                if use_persistent:
+                    for opts in [{"channel": "chrome"}, {}]:
+                        try:
+                            context = await p.chromium.launch_persistent_context(
+                                user_data_dir=str(profile_dir),
+                                headless=True,
+                                args=["--disable-blink-features=AutomationControlled"],
+                                ignore_default_args=["--enable-automation"],
+                                user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                                viewport={"width": 1280, "height": 800},
+                                **opts,
+                            )
+                            break
+                        except Exception:
+                            continue
+                else:
+                    for launch_opts in [{"channel": "chrome", "headless": True}, {"headless": True}]:
+                        try:
+                            browser = await p.chromium.launch(**launch_opts)
+                            break
+                        except Exception:
+                            continue
+                    if not browser:
+                        raise RuntimeError("Failed to launch Playwright browser (neither Google Chrome nor Chromium available).")
+
+                    context = await browser.new_context(
+                        user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                        viewport={"width": 1280, "height": 800},
+                    )
+
+                if not context:
+                    raise RuntimeError("Failed to create browser context.")
+
+                page = context.pages[0] if context.pages else await context.new_page()
 
                 # Set AuthToken/cookies in context and localStorage if available
                 auth_token = (self.auth_token or os.getenv("READTOON_AUTH_TOKEN", "")).strip()
@@ -255,8 +287,6 @@ class ReadtoonScraper(BaseScraper):
                     except Exception:
                         pass
 
-
-
                 # Navigate to chapter page
                 await page.goto(chapter_url, wait_until="domcontentloaded", timeout=25000)
 
@@ -269,12 +299,44 @@ class ReadtoonScraper(BaseScraper):
                 content_el = await page.query_selector("div.prose.mx-auto")
                 if not content_el:
                     body_text = await page.inner_text("body")
-                    if any(k in body_text for k in ["ยืนยันการซื้อตอน", "เข้าสู่ระบบเพื่อซื้อ", "เหรียญไม่เพียงพอ"]):
-                        raise PermissionError(
-                            f"Chapter {chapter_no} is a locked/paid chapter on ReadToon. "
-                            "Please provide a valid READTOON_AUTH_TOKEN in environment variables or configuration."
-                        )
-                    raise ValueError(f"Novel content container (div.prose.mx-auto) not found on {chapter_url}")
+                    is_login_required = (
+                        any(k in body_text for k in ["เข้าสู่ระบบเพื่อซื้อ", "กรุณาเข้าสู่ระบบ"])
+                        or (any(k in body_text for k in ["เข้าสู่ระบบ", "Sign In"]) and any(k in body_text for k in ["ยืนยันการซื้อ", "เหรียญ"]))
+                    )
+                    is_insufficient_coins = "เหรียญไม่เพียงพอ" in body_text
+                    is_confirm_purchase = "ยืนยันการซื้อ" in body_text or "ยืนยันการซื้อตอน" in body_text
+
+                    auto_purchase = os.getenv("READTOON_AUTO_PURCHASE", "").lower() in ("1", "true", "yes")
+
+                    # If user is logged in and purchase confirmation modal is open:
+                    if is_confirm_purchase and not is_login_required and not is_insufficient_coins:
+                        confirm_btn = await page.query_selector("button:has-text('ยืนยันการซื้อ')")
+                        if confirm_btn and auto_purchase:
+                            await confirm_btn.click()
+                            try:
+                                await page.wait_for_selector("div.prose.mx-auto", timeout=12000)
+                                content_el = await page.query_selector("div.prose.mx-auto")
+                            except Exception:
+                                pass
+
+                    if not content_el:
+                        if is_login_required:
+                            raise PermissionError(
+                                f"Chapter {chapter_no} is a locked/paid chapter on ReadToon, but your session is not authenticated (ReadToon returned 'กรุณาเข้าสู่ระบบ'). "
+                                "Please log into ReadToon using 'vox-novel login readtoon' in your terminal, or provide an active authenticated token in Settings."
+                            )
+                        elif is_insufficient_coins:
+                            raise PermissionError(
+                                f"Chapter {chapter_no} is a paid chapter on ReadToon, but your coin balance is insufficient ('เหรียญไม่เพียงพอ'). "
+                                "Please top up coins on https://readtoon.com/user/wallet."
+                            )
+                        elif is_confirm_purchase:
+                            raise PermissionError(
+                                f"Chapter {chapter_no} is a paid chapter and has not been purchased yet on your ReadToon account. "
+                                "To automatically unlock it with your coins, enable READTOON_AUTO_PURCHASE=true in settings, "
+                                f"or unlock Chapter {chapter_no} on https://readtoon.com first."
+                            )
+                        raise ValueError(f"Novel content container (div.prose.mx-auto) not found on {chapter_url}")
 
                 html_content = await content_el.inner_html()
                 # Convert <br> tags to newlines
@@ -325,4 +387,7 @@ class ReadtoonScraper(BaseScraper):
                     },
                 )
             finally:
-                await browser.close()
+                if context:
+                    await context.close()
+                if browser:
+                    await browser.close()

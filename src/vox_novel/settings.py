@@ -38,6 +38,11 @@ def get_app_settings() -> Dict[str, Any]:
     voxcpm_device = os.getenv("VOXCPM_DEVICE", "auto")
     readtoon_auth_token = os.getenv("READTOON_AUTH_TOKEN", "")
     readtoon_device_token = os.getenv("READTOON_DEVICE_TOKEN", "")
+    readtoon_auto_purchase = os.getenv("READTOON_AUTO_PURCHASE", "").lower() in ("1", "true", "yes")
+
+    from vox_novel.scrapers.readtoon import ReadtoonScraper
+    profile_dir = ReadtoonScraper.get_profile_dir()
+    readtoon_profile_exists = profile_dir.exists() and any(profile_dir.iterdir())
 
     return {
         "openrouter_api_key": mask_key(openrouter_key),
@@ -50,6 +55,8 @@ def get_app_settings() -> Dict[str, Any]:
         "readtoon_auth_token": mask_key(readtoon_auth_token) if readtoon_auth_token else "",
         "readtoon_auth_token_set": bool(readtoon_auth_token.strip()),
         "readtoon_device_token": mask_key(readtoon_device_token) if readtoon_device_token else "",
+        "readtoon_auto_purchase": readtoon_auto_purchase,
+        "readtoon_profile_exists": readtoon_profile_exists,
     }
 
 
@@ -104,6 +111,11 @@ def save_app_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         elif new_device_token == "":
             updates["READTOON_DEVICE_TOKEN"] = ""
             os.environ["READTOON_DEVICE_TOKEN"] = ""
+
+    if "readtoon_auto_purchase" in data:
+        val = "true" if data.get("readtoon_auto_purchase") in (True, "true", "1") else "false"
+        updates["READTOON_AUTO_PURCHASE"] = val
+        os.environ["READTOON_AUTO_PURCHASE"] = val
 
 
     # Update or append keys in .env
@@ -166,3 +178,72 @@ async def verify_openrouter_api_key(api_key: Optional[str] = None) -> Dict[str, 
                 return {"valid": False, "error": f"OpenRouter check failed (Status {resp.status_code})"}
     except Exception as e:
         return {"valid": False, "error": f"Connection error: {str(e)}"}
+
+
+async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]:
+    """Check whether the provided token or persistent profile is authenticated on ReadToon."""
+    from vox_novel.scrapers.readtoon import ReadtoonScraper
+
+    profile_dir = ReadtoonScraper.get_profile_dir()
+    profile_exists = profile_dir.exists() and any(profile_dir.iterdir())
+
+    key = (token or "").strip()
+    if not key or "..." in key:
+        key = os.getenv("READTOON_AUTH_TOKEN", "").strip()
+
+    if key:
+        cookies = {}
+        if ";" in key or "=" in key:
+            for part in key.split(";"):
+                if "=" in part:
+                    k, v = part.strip().split("=", 1)
+                    cookies[k.strip()] = v.strip().strip("'\"")
+        else:
+            cookies["auth_token"] = key
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Referer": "https://readtoon.com/",
+                },
+            ) as client:
+                resp = await client.get(
+                    "https://readtoon.com/api/trpc/user.profile.getMe?input=%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D",
+                    cookies=cookies,
+                )
+                if resp.status_code == 200:
+                    data = resp.json().get("result", {}).get("data", {}).get("json", {})
+                    if data and (data.get("id") or data.get("nickname") or data.get("username")):
+                        name = data.get("nickname") or data.get("username")
+                        coins = data.get("coin", 0)
+                        return {
+                            "valid": True,
+                            "nickname": name,
+                            "coins": coins,
+                            "message": f"Authenticated as {name} ({coins} coins)",
+                            "mode": "token",
+                        }
+                elif resp.status_code == 401:
+                    return {
+                        "valid": False,
+                        "error": "Unauthenticated (กรุณาเข้าสู่ระบบ). ReadToon rejected this token because it is not an active logged-in user session.",
+                        "mode": "token",
+                    }
+        except Exception as e:
+            return {"valid": False, "error": f"Connection error checking ReadToon: {str(e)}", "mode": "token"}
+
+    if profile_exists:
+        return {
+            "valid": True,
+            "nickname": "Saved Chrome Profile",
+            "message": f"Persistent profile active ({profile_dir.name})",
+            "mode": "persistent",
+        }
+
+    return {
+        "valid": False,
+        "error": "Not logged in. Use 'vox-novel login readtoon' in your terminal or paste an authenticated cookie/token.",
+        "mode": "none",
+    }

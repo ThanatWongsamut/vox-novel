@@ -847,3 +847,13 @@ async def test_api_key(request: Request):
     api_key = body.get("api_key")
     return await verify_openrouter_api_key(api_key)
 
+
+@web_app.post("/api/settings/verify-readtoon")
+async def verify_readtoon_endpoint(request: Request):
+    """Verify validity of ReadToon token or persistent session."""
+    from vox_novel.settings import verify_readtoon_session
+    body = await request.json()
+    token = body.get("token")
+    return await verify_readtoon_session(token)
+
+

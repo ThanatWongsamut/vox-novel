@@ -606,3 +606,107 @@ def tts_chapter_cmd(
 
     asyncio.run(_run())
 
+
+@app.command(name="login")
+def login_cmd(
+    service: str = typer.Argument("readtoon", help="Service to log into (e.g. readtoon)"),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Timeout in seconds for interactive login"),
+):
+    """Log into external novel sources (e.g. ReadToon) via an interactive browser window."""
+    if service.lower() != "readtoon":
+        console.print(f"[red]Unsupported service: '{service}'. Currently supported: readtoon[/red]")
+        raise typer.Exit(1)
+
+    from vox_novel.scrapers.readtoon import ReadtoonScraper
+
+    profile_dir = ReadtoonScraper.get_profile_dir()
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(Panel(
+        f"[bold cyan]🔑 ReadToon Interactive Login[/bold cyan]\n\n"
+        f"A Google Chrome window will launch on your screen pointing to ReadToon.\n\n"
+        f"[bold yellow]Instructions:[/bold yellow]\n"
+        f"1. In the Chrome window, log into your ReadToon account (via Google or Email).\n"
+        f"2. VoxNovel will automatically detect when authentication succeeds.\n"
+        f"3. Your authenticated session will be saved to: [green]{profile_dir}[/green]\n\n"
+        f"[dim]Waiting up to {timeout} seconds for login... (Close window or press Ctrl+C to cancel)[/dim]",
+        title="VoxNovel Authentication",
+        border_style="cyan",
+    ))
+
+    async def _do_login():
+        import time
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            context = None
+            for opts in [{"channel": "chrome"}, {}]:
+                try:
+                    context = await p.chromium.launch_persistent_context(
+                        user_data_dir=str(profile_dir),
+                        headless=False,
+                        args=["--disable-blink-features=AutomationControlled"],
+                        ignore_default_args=["--enable-automation"],
+                        viewport={"width": 1280, "height": 850},
+                        **opts,
+                    )
+                    break
+                except Exception:
+                    continue
+
+            if not context:
+                console.print("[bold red]❌ Failed to launch Chrome window.[/bold red]")
+                return
+
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto("https://readtoon.com/auth/sign-in")
+
+            start_time = time.time()
+            logged_in_user = None
+
+            with console.status("[cyan]Waiting for you to log in on ReadToon...[/cyan]"):
+                while time.time() - start_time < timeout:
+                    try:
+                        resp_data = await page.evaluate("""
+                            fetch('/api/trpc/user.profile.getMe?input=%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D')
+                                .then(r => r.json())
+                                .catch(e => null)
+                        """)
+                        if resp_data and "result" in resp_data:
+                            user_info = resp_data["result"].get("data", {}).get("json", {})
+                            if user_info and (user_info.get("id") or user_info.get("nickname") or user_info.get("username")):
+                                logged_in_user = user_info
+                                break
+                    except Exception:
+                        pass
+
+                    await asyncio.sleep(2)
+
+            if logged_in_user:
+                nickname = logged_in_user.get("nickname") or logged_in_user.get("username") or "User"
+                coins = logged_in_user.get("coin", 0)
+                console.print(f"\n[bold green]🎉 Login successful![/bold green]")
+                console.print(f"Logged in as: [bold cyan]{nickname}[/bold cyan] (ID: {logged_in_user.get('id', '-')})")
+                if coins:
+                    console.print(f"Coin balance: [bold yellow]{coins}[/bold yellow] coins")
+                console.print(f"[green]Session profile saved to: {profile_dir}[/green]")
+                console.print("[dim]VoxNovel will now automatically use this authenticated session for all future scrapes.[/dim]")
+
+                try:
+                    cookies = await context.cookies()
+                    auth_c = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
+                    if auth_c:
+                        from vox_novel.settings import save_app_settings
+                        save_app_settings({"readtoon_auth_token": auth_c})
+                except Exception:
+                    pass
+            else:
+                console.print("\n[yellow]⚠️ Login timed out or was not completed.[/yellow]")
+
+            await context.close()
+
+    try:
+        asyncio.run(_do_login())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Login cancelled by user.[/yellow]")
+

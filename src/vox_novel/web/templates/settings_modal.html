@@ -107,17 +107,31 @@
             <div class="border-t border-slate-800 pt-3 space-y-2">
                 <div class="flex items-center justify-between">
                     <label class="font-medium text-slate-300 flex items-center gap-1.5">
-                        <i class="fa-solid fa-shield-halved text-amber-400"></i> ReadToon Auth Token / Cookie
+                        <i class="fa-solid fa-shield-halved text-amber-400"></i> ReadToon Auth Token / Session
                     </label>
-                    <span class="text-[10px] text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Optional • For Paid Chapters</span>
+                    <div class="flex items-center gap-2">
+                        <button type="button" onclick="testReadtoonSession()" class="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs rounded-lg transition border border-amber-500/30 flex items-center gap-1">
+                            <i class="fa-solid fa-vial"></i> Test Session
+                        </button>
+                        <span class="text-[10px] text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Optional • For Paid Chapters</span>
+                    </div>
                 </div>
                 <div class="relative flex items-center">
-                    <input type="password" id="setting-readtoon-token" placeholder="auth_token=eyJ... or _$AuthToken" class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    <input type="password" id="setting-readtoon-token" placeholder="auth_token=eyJ... or full cURL cookie" class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
                     <button type="button" onclick="toggleKeyVisibility('setting-readtoon-token', 'readtoon-eye-icon')" class="absolute right-2 p-1.5 text-slate-400 hover:text-white text-xs">
                         <i id="readtoon-eye-icon" class="fa-solid fa-eye"></i>
                     </button>
                 </div>
-                <p class="text-[10px] text-slate-500">Paste your <code>auth_token</code> or full cURL cookie string to scrape purchased/locked chapters on ReadToon. (Free chapters 1–68 do not require any token).</p>
+                <div id="readtoon-test-status" class="hidden text-[11px] mt-1"></div>
+
+                <div class="flex items-center gap-2 pt-1">
+                    <input type="checkbox" id="setting-readtoon-auto-purchase" class="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-amber-500">
+                    <label for="setting-readtoon-auto-purchase" class="text-xs text-slate-300 cursor-pointer select-none">
+                        Automatically unlock paid chapters using coin balance (<code class="text-amber-400 font-mono">1.20 coins</code> per chapter)
+                    </label>
+                </div>
+
+                <p class="text-[10px] text-slate-500">💡 <b>Recommended:</b> Run <code class="text-amber-400 font-mono bg-slate-800 px-1 py-0.5 rounded">vox-novel login readtoon</code> in your terminal to log in via Chrome once. Free chapters 1–68 require no token.</p>
             </div>
 
             <!-- Status banner -->
@@ -176,6 +190,11 @@
                 const readtoonTokenInput = document.getElementById('setting-readtoon-token');
                 if (readtoonTokenInput && data.readtoon_auth_token) {
                     readtoonTokenInput.value = data.readtoon_auth_token;
+                }
+
+                const readtoonAutoPurchaseCheckbox = document.getElementById('setting-readtoon-auto-purchase');
+                if (readtoonAutoPurchaseCheckbox) {
+                    readtoonAutoPurchaseCheckbox.checked = !!data.readtoon_auto_purchase;
                 }
 
 
@@ -260,6 +279,35 @@
         }
     }
 
+    async function testReadtoonSession() {
+        const tokenInput = document.getElementById('setting-readtoon-token');
+        const statusEl = document.getElementById('readtoon-test-status');
+        statusEl.classList.remove('hidden', 'text-green-400', 'text-rose-400', 'text-amber-400');
+        statusEl.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Testing ReadToon session...';
+
+        const tokenVal = tokenInput ? tokenInput.value.trim() : "";
+
+        try {
+            const resp = await fetch('/api/settings/verify-readtoon', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: tokenVal })
+            });
+            const data = await resp.json();
+
+            if (data.valid) {
+                statusEl.className = 'text-[11px] text-green-400 flex items-center gap-1.5';
+                statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> <b>Authenticated:</b> ${data.message}`;
+            } else {
+                statusEl.className = 'text-[11px] text-rose-400 flex items-center gap-1.5';
+                statusEl.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> ${data.error || "ReadToon verification failed"}`;
+            }
+        } catch (err) {
+            statusEl.className = 'text-[11px] text-rose-400 flex items-center gap-1.5';
+            statusEl.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> Network error: ${err.message}`;
+        }
+    }
+
     async function saveSettings(e) {
         e.preventDefault();
         const keyInput = document.getElementById('setting-openrouter-key');
@@ -281,6 +329,7 @@
             const voxcpmUrlInput = document.getElementById('setting-voxcpm-url');
             const voxcpmDeviceSelect = document.getElementById('setting-voxcpm-device');
             const readtoonTokenInput = document.getElementById('setting-readtoon-token');
+            const readtoonAutoPurchaseCheckbox = document.getElementById('setting-readtoon-auto-purchase');
 
             const resp = await fetch('/api/settings', {
                 method: 'POST',
@@ -292,6 +341,7 @@
                     voxcpm_api_url: voxcpmUrlInput ? voxcpmUrlInput.value.trim() : "",
                     voxcpm_device: voxcpmDeviceSelect ? voxcpmDeviceSelect.value : "auto",
                     readtoon_auth_token: readtoonTokenInput ? readtoonTokenInput.value.trim() : "",
+                    readtoon_auto_purchase: readtoonAutoPurchaseCheckbox ? readtoonAutoPurchaseCheckbox.checked : false,
                 })
             });
 
