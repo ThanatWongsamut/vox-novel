@@ -188,29 +188,13 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
     profile_dir = ReadtoonScraper.get_profile_dir()
     profile_exists = profile_dir.exists() and any(profile_dir.iterdir())
     session_file = profile_dir / "user_session.json"
+    storage_file = profile_dir / "storage_state.json"
 
-    # If profile has cached user info and caller didn't pass an explicit new token to test
-    if not token and profile_exists and session_file.exists():
-        try:
-            session_data = json.loads(session_file.read_text(encoding="utf-8"))
-            name = session_data.get("nickname") or "ReadToon User"
-            coins = session_data.get("coins", "-")
-            return {
-                "valid": True,
-                "nickname": name,
-                "coins": coins,
-                "message": f"Authenticated as {name} ({coins} coins)",
-                "mode": "persistent",
-            }
-        except Exception:
-            pass
+    cookies = {}
 
+    # 1. If explicit token passed
     key = (token or "").strip()
-    if not key or "..." in key:
-        key = os.getenv("READTOON_AUTH_TOKEN", "").strip()
-
-    if key:
-        cookies = {}
+    if key and "..." not in key:
         if ";" in key or "=" in key:
             for part in key.split(";"):
                 if "=" in part:
@@ -218,10 +202,24 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
                     cookies[k.strip()] = v.strip().strip("'\"")
         else:
             cookies["auth_token"] = key
+    else:
+        # 2. Extract from storage_state.json if available
+        if storage_file.exists():
+            try:
+                st = json.loads(storage_file.read_text(encoding="utf-8"))
+                for c in st.get("cookies", []):
+                    if c.get("name") in ("auth_token", "device_token"):
+                        cookies[c["name"]] = c["value"]
+            except Exception:
+                pass
 
+        # 3. Extract from environment variables if not already set
+        if "auth_token" not in cookies and os.getenv("READTOON_AUTH_TOKEN"):
+            cookies["auth_token"] = os.getenv("READTOON_AUTH_TOKEN", "").strip()
         if "device_token" not in cookies and os.getenv("READTOON_DEVICE_TOKEN"):
             cookies["device_token"] = os.getenv("READTOON_DEVICE_TOKEN", "").strip()
 
+    if "auth_token" in cookies:
         try:
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -244,47 +242,43 @@ async def verify_readtoon_session(token: Optional[str] = None) -> Dict[str, Any]
                             coins = str(int(c_val)) if c_val.is_integer() else f"{c_val:.2f}"
                         except Exception:
                             coins = str(raw_coins)
+
+                        user_info = {"id": data.get("id"), "nickname": name, "coins": coins}
+                        try:
+                            session_file.write_text(json.dumps(user_info, ensure_ascii=False), encoding="utf-8")
+                        except Exception:
+                            pass
+
                         return {
                             "valid": True,
                             "nickname": name,
                             "coins": coins,
                             "message": f"Authenticated as {name} ({coins} coins)",
-                            "mode": "token",
+                            "mode": "persistent" if profile_exists else "token",
                         }
-                elif resp.status_code == 401 and token is not None:
+                elif resp.status_code == 401:
+                    if session_file.exists():
+                        try:
+                            session_file.unlink()
+                        except Exception:
+                            pass
                     return {
                         "valid": False,
-                        "error": "Unauthenticated (กรุณาเข้าสู่ระบบ). ReadToon rejected this token because it is not an active logged-in user session.",
+                        "error": "Unauthenticated (กรุณาเข้าสู่ระบบ). The ReadToon session is expired or invalid. Please log in.",
                         "mode": "token",
                     }
         except Exception as e:
             if token is not None:
                 return {"valid": False, "error": f"Connection error checking ReadToon: {str(e)}", "mode": "token"}
 
-    if profile_exists:
-        if session_file.exists():
-            try:
-                session_data = json.loads(session_file.read_text(encoding="utf-8"))
-                name = session_data.get("nickname") or "ReadToon User"
-                coins = session_data.get("coins", "-")
-                return {
-                    "valid": True,
-                    "nickname": name,
-                    "coins": coins,
-                    "message": f"Authenticated as {name} ({coins} coins)",
-                    "mode": "persistent",
-                }
-            except Exception:
-                pass
-        return {
-            "valid": True,
-            "nickname": "Saved Chrome Profile",
-            "message": f"Persistent profile active ({profile_dir.name})",
-            "mode": "persistent",
-        }
+    if session_file.exists():
+        try:
+            session_file.unlink()
+        except Exception:
+            pass
 
     return {
         "valid": False,
-        "error": "Not logged in. Use 'vox-novel login readtoon' in your terminal or paste an authenticated cookie/token.",
+        "error": "Not logged in. Please click 'Log In to ReadToon' or run 'vox-novel login readtoon'.",
         "mode": "none",
     }

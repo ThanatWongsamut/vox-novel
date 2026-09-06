@@ -480,7 +480,14 @@ def run_web(
     """Launch the VoxNovel Web UI Dashboard and Reader."""
     import uvicorn
     console.print(Panel(f"[bold cyan]VoxNovel Web UI[/bold cyan]\nRunning on: [bold green]http://{host}:{port}[/bold green]", expand=False))
-    uvicorn.run("vox_novel.web.app:web_app", host=host, port=port, reload=reload)
+    uvicorn.run(
+        "vox_novel.web.app:web_app",
+        host=host,
+        port=port,
+        reload=reload,
+        reload_dirs=["src"] if reload else None,
+        reload_excludes=[".env", "*.json", "*_profile*", "storage/**"] if reload else None,
+    )
 
 
 def _review_entities_cli(new_terms: list, new_chars: list, knowledge: SeriesKnowledge) -> bool:
@@ -706,6 +713,11 @@ def login_cmd(
                 try:
                     import json
                     session_file.write_text(json.dumps(user_session, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+
+                try:
+                    await context.storage_state(path=str(profile_dir / "storage_state.json"))
                 except Exception:
                     pass
 

@@ -39,17 +39,17 @@ class ReadtoonAuthManager:
         return ReadtoonScraper.get_profile_dir()
 
     async def get_current_session(self) -> Dict[str, Any]:
-        """Check if there is an active session right now."""
-        if self.user and self.user.get("nickname"):
-            return {
-                "valid": True,
-                "nickname": self.user.get("nickname"),
-                "coins": self.user.get("coins", "0"),
-                "message": f"Authenticated as {self.user.get('nickname')} ({self.user.get('coins')} coins)",
-                "mode": "persistent",
-            }
+        """Check if there is an active session right now by testing live validity."""
         from vox_novel.settings import verify_readtoon_session
-        return await verify_readtoon_session()
+        res = await verify_readtoon_session()
+        if res.get("valid"):
+            self.user = {
+                "nickname": res.get("nickname"),
+                "coins": res.get("coins"),
+            }
+        else:
+            self.user = None
+        return res
 
     def get_status(self) -> Dict[str, Any]:
         return {
@@ -177,6 +177,12 @@ class ReadtoonAuthManager:
                         pass
 
                     try:
+                        # Flush full Playwright storage state (cookies + localStorage)
+                        await context.storage_state(path=str(profile_dir / "storage_state.json"))
+                    except Exception:
+                        pass
+
+                    try:
                         cookies = await context.cookies()
                         auth_c = next((c["value"] for c in cookies if c["name"] == "auth_token"), None)
                         device_c = next((c["value"] for c in cookies if c["name"] == "device_token"), None)
@@ -191,7 +197,7 @@ class ReadtoonAuthManager:
                     except Exception:
                         pass
 
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
                 else:
                     if self.status != "cancelled":
                         self.status = "error"
