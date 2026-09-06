@@ -57,6 +57,23 @@ async def get_chapter_audio(series_id: str, chapter_id: str):
     )
 
 
+@web_app.api_route("/api/audio/{series_id}/{chapter_id}/para/{para_idx}", methods=["GET", "HEAD"])
+async def get_paragraph_audio(series_id: str, chapter_id: str, para_idx: int):
+    chapters_dir = storage.base_dir / series_id / "chapters"
+    p_file = chapters_dir / f"para_{chapter_id}_{para_idx}.wav"
+    if not p_file.exists():
+        raise HTTPException(status_code=404, detail="Paragraph audio not found")
+    return FileResponse(p_file, media_type="audio/wav", headers={"Accept-Ranges": "bytes"})
+
+
+@web_app.api_route("/api/test-voice/{num}", methods=["GET", "HEAD"])
+async def get_test_voice(num: int):
+    p = Path("output") / f"test_voice{num}.wav"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Test voice not found")
+    return FileResponse(p, media_type="audio/wav", headers={"Accept-Ranges": "bytes"})
+
+
 @web_app.get("/explore", response_class=HTMLResponse)
 async def explore_novels(request: Request, q: Optional[str] = None):
     from vox_novel.scrapers.webnovel import search_webnovel, browse_webnovel

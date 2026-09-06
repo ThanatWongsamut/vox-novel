@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import os
@@ -62,12 +63,16 @@ class VoxCPM2TTS(BaseTTS):
             from voxcpm import VoxCPM
             device = self._resolve_device()
             logger.info(f"Loading VoxCPM2 model ({self.model_name}) on device: {device}...")
-            self._local_model = VoxCPM.from_pretrained(self.model_name)
+            self._local_model = VoxCPM.from_pretrained(
+                self.model_name,
+                load_denoiser=False,
+                device=device,
+            )
             return self._local_model
         except ImportError as e:
             if not self._warned_local:
                 logger.warning(
-                    f"voxcpm package not installed locally ({e}). "
+                    f"voxcpm package not installed ({e}). "
                     "Set VOXCPM_API_URL to use a remote GPU server, or install voxcpm."
                 )
                 self._warned_local = True
@@ -175,17 +180,19 @@ class VoxCPM2TTS(BaseTTS):
                     if emotion:
                         control_prompt += f", อารมณ์ {emotion}"
 
-                    kwargs: dict[str, Any] = {"text": text, "control": control_prompt}
+                    kwargs: dict[str, Any] = {"text": text}
                     if reference_audio and Path(reference_audio).exists():
-                        kwargs["reference_audio"] = str(reference_audio)
+                        kwargs["reference_wav_path"] = str(reference_audio)
 
-                    audio_array = model.generate(**kwargs)
+                    audio_array = await asyncio.to_thread(model.generate, **kwargs)
+                    if hasattr(model, "tts_model") and hasattr(model.tts_model, "sample_rate"):
+                        self.sample_rate = model.tts_model.sample_rate
                 except Exception as e:
                     logger.error(f"Local VoxCPM generation failed: {e}")
 
         # 3. Fallback to placeholder if unconfigured
         if audio_array is None:
-            logger.info("Using synthetic placeholder for PoC demonstration.")
+            logger.info("Using synthetic placeholder tone (real model weights not loaded).")
             audio_array = self._generate_synthetic_placeholder(text)
 
         sf.write(output_file, audio_array, self.sample_rate)
@@ -219,6 +226,23 @@ class VoxCPM2TTS(BaseTTS):
 
         default_desc = voice_description or "เสียงบรรยายผู้ชาย นุ่มลึก ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
 
+        # Ensure a persistent narrator reference voice exists so all narration paragraphs sound identical
+        effective_narrator_ref = reference_audio
+        if effective_narrator_ref is None or not Path(effective_narrator_ref).exists():
+            voices_dir = output_dir.parent / "voices"
+            voices_dir.mkdir(parents=True, exist_ok=True)
+            narrator_sample = voices_dir / "narrator_ref.wav"
+            if not narrator_sample.exists():
+                logger.info("Generating canonical narrator reference voice anchor...")
+                sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
+                await self.synthesize(
+                    text=sample_text,
+                    output_file=narrator_sample,
+                    voice_description=default_desc,
+                    reference_audio=None,
+                )
+            effective_narrator_ref = narrator_sample
+
         for idx, p in enumerate(valid_paras):
             text_to_speak = (p.translated_text if use_translated else p.text).strip()
             
@@ -231,7 +255,7 @@ class VoxCPM2TTS(BaseTTS):
 
             # Determine voice & emotion for this paragraph (consistent character reference or narrator)
             para_voice_desc = default_desc
-            para_ref_audio = reference_audio
+            para_ref_audio = effective_narrator_ref
             para_emotion = p.emotion
 
             # Clean and synthesize chunk

@@ -19,6 +19,7 @@ dependencies = [
     "soundfile>=0.14.0",
     "typer>=0.27.2",
     "uvicorn>=0.52.4",
+    "voxcpm>=2.0.3",
 ]
 
 [build-system]
