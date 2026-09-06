@@ -119,6 +119,11 @@
                                     <i class="fa-solid fa-book-open"></i> Read
                                 </a>
                                 {% endif %}
+                                {% if novel.source == 'readtoon' and ch.is_locked and not is_trans %}
+                                <a href="{{ ch.url }}" target="_blank" title="Open chapter in Chrome and click [🎙️ Import to VoxNovel]" class="px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                    <i class="fa-solid fa-arrow-up-right-from-square"></i> Open & Import
+                                </a>
+                                {% endif %}
                                 <button onclick="startTranslation('{{ novel.id }}', '{{ ch.url }}', '{{ ch.title }}')" class="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded transition text-[11px] inline-flex items-center gap-1">
                                     <i class="fa-solid {% if novel.source == 'readtoon' %}fa-cloud-arrow-down{% else %}fa-language{% endif %}"></i>
                                     {% if novel.source == 'readtoon' %}
@@ -127,7 +132,6 @@
                                         {{ 'Re-Translate' if is_trans else 'Translate' }}
                                     {% endif %}
                                 </button>
-
                             </td>
                         </tr>
                         {% endfor %}
@@ -304,6 +308,28 @@
                 formatted = "<b>Upstream Rate Limit (429):</b><br>The free provider pool is temporarily saturated or daily quota reached.<br><br>💡 <i>Tip: Click 'Retry Now' to retry immediately (with automatic backoff), or open Settings to configure a personal API key or different model.</i>";
             } else if (rawError.includes('401') || rawError.includes('Unauthorized') || rawError.includes('API_KEY')) {
                 formatted = "<b>Authentication Error (401):</b><br>The OpenRouter API Key is missing or invalid.<br><br>💡 <i>Please open 'Settings & Keys' and verify your API key.</i>";
+            } else if (rawError.includes('locked') || rawError.includes('paid') || rawError.includes('ReadToon') || rawError.includes('เข้าสู่ระบบ')) {
+                formatted = `
+                    <div class="space-y-3 text-left">
+                        <div class="font-bold text-amber-300 flex items-center gap-1.5 text-sm">
+                            <i class="fa-solid fa-lock text-amber-400"></i> Paid / Encrypted Chapter on ReadToon
+                        </div>
+                        <p class="text-xs text-slate-300 leading-relaxed">
+                            ReadToon encrypts paid chapters in your browser with Cloudflare Turnstile protection. The server cannot fetch them in the background.
+                        </p>
+                        <div class="p-3 bg-indigo-950/70 border border-indigo-500/30 rounded-2xl space-y-2">
+                            <p class="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
+                                <i class="fa-solid fa-wand-magic-sparkles text-pink-400"></i> Easy Solution: Use VoxNovel Chrome Extension
+                            </p>
+                            <p class="text-[11px] text-slate-300">
+                                Open this chapter in your logged-in Chrome browser, then click the floating <b>[🎙️ Import to VoxNovel]</b> button in the bottom right!
+                            </p>
+                            <a href="${currentChapterUrl}" target="_blank" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-purple-600/30 transition">
+                                <i class="fa-solid fa-arrow-up-right-from-square"></i> Open Chapter on ReadToon ↗
+                            </a>
+                        </div>
+                    </div>
+                `;
             }
 
             descEl.innerHTML = formatted;
