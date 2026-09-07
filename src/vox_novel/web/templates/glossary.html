@@ -160,6 +160,11 @@
                     <span>Terminology</span>
                     <span class="bg-slate-800 text-slate-300 text-[10px] px-1.5 py-0.5 rounded-md font-mono">{{ knowledge.terms|length }}</span>
                 </button>
+                <button id="tab-btn-voices" onclick="switchTab('voices')" class="tab-btn px-3.5 py-1.5 rounded-lg font-medium transition flex items-center gap-2">
+                    <i class="fa-solid fa-microphone-lines text-pink-400"></i>
+                    <span>Voice Studio</span>
+                    <span class="bg-pink-950/80 text-pink-300 text-[10px] px-1.5 py-0.5 rounded-md font-mono">VoxCPM2</span>
+                </button>
                 <button id="tab-btn-split" onclick="switchTab('split')" class="tab-btn px-3.5 py-1.5 rounded-lg font-medium transition flex items-center gap-2">
                     <i class="fa-solid fa-columns text-slate-400"></i>
                     <span>Side-by-Side</span>
@@ -195,6 +200,7 @@
                                 <th class="py-3 px-4 min-w-[130px]">Gender & Particle</th>
                                 <th class="py-3 px-4 min-w-[140px]">Target (Thai)</th>
                                 <th class="py-3 px-4">Role / Context Notes</th>
+                                <th class="py-3 px-4 min-w-[130px]">Voice (VoxCPM2)</th>
                                 <th class="py-3 px-4 text-right min-w-[110px]">Actions</th>
                             </tr>
                         </thead>
@@ -236,8 +242,24 @@
                                     <div class="text-[11px] text-slate-400 mt-0.5 italic">{{ char.notes }}</div>
                                     {% endif %}
                                 </td>
+                                <td class="py-3 px-4 whitespace-nowrap">
+                                    {% set cstatus = char_voice_status.get(key, {}) %}
+                                    {% if cstatus.get('has_ref', false) %}
+                                    <button onclick="switchTab('voices'); scrollToVoiceCard('{{ key }}')" class="inline-flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition shadow-sm">
+                                        <i class="fa-solid fa-microphone text-[9px]"></i> Anchor Active
+                                    </button>
+                                    {% elif char.voice_description %}
+                                    <button onclick="switchTab('voices'); scrollToVoiceCard('{{ key }}')" class="inline-flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-1 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25 transition shadow-sm">
+                                        <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Prompt Set
+                                    </button>
+                                    {% else %}
+                                    <button onclick="switchTab('voices'); scrollToVoiceCard('{{ key }}')" class="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-indigo-400 transition">
+                                        <i class="fa-solid fa-plus text-[9px]"></i> Add Voice
+                                    </button>
+                                    {% endif %}
+                                </td>
                                 <td class="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
-                                    <button onclick="openEditModal('character', '{{ char.name_en }}', '{{ char.name_target }}', '{{ char.role or '' }}', '{{ char.aliases|join(', ') if char.aliases else '' }}', '{{ char.notes or '' }}', '{{ char.gender or '' }}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                    <button onclick="openEditModal('character', '{{ char.name_en }}', '{{ char.name_target }}', '{{ char.role or '' }}', '{{ char.aliases|join(', ') if char.aliases else '' }}', '{{ char.notes or '' }}', '{{ char.gender or '' }}', '{{ char.voice_description or '' }}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
                                         <i class="fa-solid fa-pen text-[10px] text-indigo-400"></i> Edit
                                     </button>
                                     <button onclick="deleteItem('character', '{{ char.name_en }}')" class="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition text-[11px] inline-flex items-center gap-1 shadow-sm">
@@ -330,6 +352,269 @@
                     </table>
                 </div>
             </div>
+
+            <!-- Voice Studio Section -->
+            <div id="voices-wrapper" class="space-y-6 hidden">
+                <!-- Studio Header Banner -->
+                <div class="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-5 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-2">
+                            <span class="text-base font-bold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-microphone-lines text-pink-400"></i> VoxCPM2 Voice Studio & Reference Anchors
+                            </span>
+                            <span class="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                                Voice Cloning & Design
+                            </span>
+                        </div>
+                        <p class="text-xs text-slate-400 leading-relaxed">
+                            Design custom voices with natural text prompts or upload your own audio files (<span class="font-mono text-slate-300">.wav, .mp3</span>). Reference voice anchors guarantee that the narrator and characters speak with 100% consistent vocal timbre across all novel chapters.
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span class="text-xs px-3 py-1.5 rounded-xl bg-slate-800/80 border border-slate-700/80 text-slate-300 flex items-center gap-1.5">
+                            <i class="fa-solid fa-shield-halved text-emerald-400 text-xs"></i> 48kHz Neural Consistency
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Narrator Reference Voice Anchor Card -->
+                <div class="bg-slate-900/80 border-2 border-indigo-500/30 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+                    <div class="absolute -right-12 -top-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3 mb-4">
+                        <div class="flex items-center gap-2.5">
+                            <div class="w-8 h-8 rounded-lg bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                                <i class="fa-solid fa-book-open-reader"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                                    Narrator Voice Anchor (ผู้บรรยายหลัก)
+                                </h3>
+                                <p class="text-[11px] text-slate-400">Master voice used for all novel narration and descriptive paragraphs.</p>
+                            </div>
+                        </div>
+                        <div id="narrator-status-badge">
+                            {% if has_narrator_ref %}
+                            <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Custom Voice Anchor Active
+                            </span>
+                            {% else %}
+                            <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 shadow-sm">
+                                <span class="w-2 h-2 rounded-full bg-slate-500"></span> Default Voice (Click Generate or Upload to customize)
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                        <!-- Left: Prompt & Sample Text -->
+                        <div class="lg:col-span-7 space-y-3">
+                            <div>
+                                <div class="flex items-center justify-between mb-1.5">
+                                    <label class="text-[11px] font-medium text-slate-300 flex items-center gap-1.5">
+                                        <i class="fa-solid fa-wand-magic-sparkles text-indigo-400"></i> Narrator Voice Design Prompt
+                                    </label>
+                                    <span class="text-[10px] text-slate-500">Thai or English voice description</span>
+                                </div>
+                                <textarea id="narrator-voice-prompt" rows="2" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl p-3 text-xs text-indigo-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition" placeholder="e.g. เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี">{{ knowledge.narrator_voice_description or 'เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี' }}</textarea>
+                                
+                                <!-- Quick Preset Tags -->
+                                <div class="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                                    <span class="text-[10px] text-slate-500 mr-1">Presets:</span>
+                                    <button type="button" onclick="setNarratorPrompt('เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี')" class="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🎙️ ชายทุ้มนุ่มลึก</button>
+                                    <button type="button" onclick="setNarratorPrompt('เสียงบรรยายผู้ชาย สุขุม นุ่มนวล ชวนฟัง น่าติดตาม')" class="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">📖 ชายสุขุมนุ่มนวล</button>
+                                    <button type="button" onclick="setNarratorPrompt('เสียงบรรยายผู้หญิง หวานใส ชัดเจน เล่าเรื่องสนุก มีชีวิตชีวา')" class="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🌸 หญิงหวานสดใส</button>
+                                    <button type="button" onclick="setNarratorPrompt('เสียงผู้ชายห้าว ทรงพลัง ตื่นเต้น เร้าใจ ดุดัน')" class="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">⚡ ชายทรงพลัง</button>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-[11px] font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-comment-dots text-slate-400"></i> Sample Sentence to Synthesize
+                                </label>
+                                <input type="text" id="narrator-sample-text" value="ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย" class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
+                            </div>
+                        </div>
+
+                        <!-- Right: Audio Player & Action Controls -->
+                        <div class="lg:col-span-5 flex flex-col justify-between space-y-4 bg-slate-950/60 border border-slate-800/80 rounded-xl p-4">
+                            <div class="space-y-2">
+                                <label class="text-[11px] font-medium text-slate-300 flex items-center justify-between">
+                                    <span><i class="fa-solid fa-headphones text-indigo-400"></i> Reference Audio Preview</span>
+                                </label>
+                                
+                                <audio id="narrator-audio" class="w-full h-9 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/narrator{% if has_narrator_ref %}?v=1{% endif %}">
+                                    Your browser does not support the audio element.
+                                </audio>
+                            </div>
+
+                            <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800/80">
+                                <button type="button" id="btn-gen-narrator" onclick="generateVoice('narrator')" class="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-1.5">
+                                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                                    <span>Generate Voice</span>
+                                </button>
+
+                                <label class="cursor-pointer py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl border border-slate-700 transition flex items-center justify-center gap-1.5">
+                                    <i class="fa-solid fa-arrow-up-from-bracket text-indigo-400"></i>
+                                    <span>Upload</span>
+                                    <input type="file" id="upload-narrator-input" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" class="hidden" onchange="uploadVoiceFile('narrator', null, this)">
+                                </label>
+
+                                <button type="button" onclick="saveVoicePrompt('narrator')" class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs rounded-xl border border-slate-700 transition flex items-center gap-1.5" title="Save prompt description without synthesizing">
+                                    <i class="fa-solid fa-floppy-disk"></i>
+                                </button>
+
+                                <button type="button" id="btn-del-narrator" onclick="deleteVoice('narrator')" class="py-2 px-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs rounded-xl border border-rose-500/20 transition flex items-center gap-1.5 {% if not has_narrator_ref %}hidden{% endif %}" title="Reset reference voice anchor">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Characters Voice Studio Section -->
+                <div class="space-y-4">
+                    <!-- Controls Bar -->
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/70 border border-slate-800/80 p-3.5 rounded-2xl">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-pink-400"></span>
+                            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-user-ninja text-pink-400"></i> Character Voice Anchors ({{ knowledge.characters|length }})
+                            </h3>
+                        </div>
+
+                        <!-- Filters -->
+                        <div class="flex flex-wrap items-center gap-2">
+                            <div class="relative w-48 sm:w-60">
+                                <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-[11px]"></i>
+                                <input type="text" id="voice-char-search" onkeyup="filterVoiceCards()" placeholder="Filter characters..." class="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg pl-7 pr-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                            </div>
+
+                            <div class="flex items-center gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800 text-[11px]">
+                                <button type="button" onclick="filterVoiceGender('all')" class="voice-filter-pill active px-2.5 py-0.5 rounded-md transition font-medium" data-vfilter="all">All</button>
+                                <button type="button" onclick="filterVoiceGender('male')" class="voice-filter-pill px-2.5 py-0.5 rounded-md transition font-medium text-slate-400" data-vfilter="male">♂ ชาย</button>
+                                <button type="button" onclick="filterVoiceGender('female')" class="voice-filter-pill px-2.5 py-0.5 rounded-md transition font-medium text-slate-400" data-vfilter="female">♀ หญิง</button>
+                                <button type="button" onclick="filterVoiceGender('has_ref')" class="voice-filter-pill px-2.5 py-0.5 rounded-md transition font-medium text-slate-400" data-vfilter="has_ref">🟢 มีเสียงแล้ว</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Character Cards Grid -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="voice-cards-container">
+                        {% for key, char in knowledge.characters.items() %}
+                        {% set cstatus = char_voice_status.get(key, {}) %}
+                        {% set has_ref = cstatus.get('has_ref', false) %}
+                        {% set is_female = char.gender and char.gender.lower() in ('female', 'f', 'หญิง') %}
+                        {% set is_male = char.gender and char.gender.lower() in ('male', 'm', 'ชาย') %}
+                        
+                        <div class="char-voice-card bg-slate-900/80 border border-slate-800/90 hover:border-slate-700 rounded-2xl p-4 shadow-lg space-y-3.5 transition flex flex-col justify-between"
+                             data-name="{{ char.name_en }}"
+                             data-target="{{ char.name_target }}"
+                             data-gender="{{ 'female' if is_female else ('male' if is_male else 'neutral') }}"
+                             data-hasref="{{ 'true' if has_ref else 'false' }}"
+                             id="char-card-{{ key }}">
+                            
+                            <!-- Card Header -->
+                            <div class="flex items-start justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-bold text-emerald-400 text-sm">{{ char.name_target }}</span>
+                                        {% if is_male %}
+                                        <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">♂ ชาย</span>
+                                        {% elif is_female %}
+                                        <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-pink-500/15 text-pink-300 border border-pink-500/30">♀ หญิง</span>
+                                        {% else %}
+                                        <span class="text-[10px] text-slate-400 px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700">⚪ ทั่วไป</span>
+                                        {% endif %}
+                                    </div>
+                                    <div class="text-[11px] font-mono text-cyan-300 mt-0.5">{{ char.name_en }}</div>
+                                    {% if char.role %}
+                                    <div class="text-[10px] text-slate-400 mt-0.5 italic">{{ char.role }}</div>
+                                    {% endif %}
+                                </div>
+
+                                <div id="char-status-badge-{{ key }}">
+                                    {% if has_ref %}
+                                    <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Anchor Set
+                                    </span>
+                                    {% elif char.voice_description %}
+                                    <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span> Prompt Set
+                                    </span>
+                                    {% else %}
+                                    <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-500 border border-slate-700/60">
+                                        ⚪ Default
+                                    </span>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Voice Design Prompt -->
+                            <div class="space-y-1.5">
+                                <div class="flex items-center justify-between text-[11px]">
+                                    <label class="text-slate-300 font-medium flex items-center gap-1">
+                                        <i class="fa-solid fa-wand-magic-sparkles text-pink-400 text-[10px]"></i> Voice Design Prompt
+                                    </label>
+                                </div>
+                                <textarea id="voice-prompt-{{ key }}" rows="2" class="w-full bg-slate-950/80 border border-slate-700/70 rounded-xl p-2.5 text-xs text-pink-200 placeholder-slate-500 focus:outline-none focus:border-pink-500 transition" placeholder="{% if is_female %}e.g. หญิงสาววัยรุ่น เสียงหวานใส ร่าเริง อ่อนหวาน{% else %}e.g. ชายหนุ่มวัย 20 เสียงห้าว มั่นใจ ชัดเจน{% endif %}">{{ char.voice_description or '' }}</textarea>
+
+                                <!-- Prompt Keyword Chips -->
+                                <div class="flex flex-wrap gap-1 items-center pt-0.5">
+                                    <span class="text-[9px] text-slate-500">Keywords:</span>
+                                    {% if is_female %}
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'เสียงหวานใส')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">หวานใส</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'ร่าเริง อ่อนหวาน')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">ร่าเริง</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'เย็นชา สุขุม')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">เย็นชา</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'สง่างาม น่าเกรงขาม')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">สง่างาม</button>
+                                    {% else %}
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'เสียงทุ้ม มั่นใจ')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">เสียงทุ้ม</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'เสียงห้าว ดุดัน')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">ดุดัน</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'สุขุม รอบคอบ')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">สุขุม</button>
+                                    <button type="button" onclick="appendPrompt('voice-prompt-{{ key }}', 'ขี้เล่น เป็นมิตร')" class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">ขี้เล่น</button>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Sample Sentence -->
+                            <div class="space-y-1">
+                                <label class="block text-[10px] font-medium text-slate-400">Sample Sentence</label>
+                                <input type="text" id="sample-text-{{ key }}" value="สวัสดี ข้าชื่อ{{ char.name_target }} ยินดีที่ได้รู้จัก" class="w-full bg-slate-950/80 border border-slate-700/70 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
+                            </div>
+
+                            <!-- Audio Player -->
+                            <div class="space-y-1.5 pt-1">
+                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}{% if has_ref %}?v=1{% endif %}">
+                                    Your browser does not support the audio element.
+                                </audio>
+                            </div>
+
+                            <!-- Action Buttons -->
+                            <div class="flex items-center gap-1.5 pt-2 border-t border-slate-800/80">
+                                <button type="button" id="btn-gen-{{ key }}" onclick="generateVoice('character', '{{ char.name_en }}', '{{ key }}')" class="flex-1 py-1.5 px-2 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-[11px] font-semibold rounded-lg transition shadow-md flex items-center justify-center gap-1">
+                                    <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
+                                    <span>Generate</span>
+                                </button>
+
+                                <label class="cursor-pointer py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium rounded-lg border border-slate-700 transition flex items-center justify-center gap-1" title="Upload audio file (.wav/.mp3)">
+                                    <i class="fa-solid fa-upload text-indigo-400 text-[10px]"></i>
+                                    <span>Upload</span>
+                                    <input type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" class="hidden" onchange="uploadVoiceFile('character', '{{ char.name_en }}', this, '{{ key }}')">
+                                </label>
+
+                                <button type="button" onclick="saveVoicePrompt('character', '{{ char.name_en }}', '{{ key }}')" class="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] rounded-lg border border-slate-700 transition" title="Save prompt only">
+                                    <i class="fa-solid fa-floppy-disk text-[10px]"></i>
+                                </button>
+
+                                <button type="button" id="btn-del-{{ key }}" onclick="deleteVoice('character', '{{ char.name_en }}', '{{ key }}')" class="py-1.5 px-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[11px] rounded-lg border border-rose-500/20 transition {% if not has_ref %}hidden{% endif %}" title="Delete reference audio">
+                                    <i class="fa-solid fa-trash text-[10px]"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
         </div>
     </main>
 
@@ -378,6 +663,14 @@
                     <input type="text" id="edit-aliases" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-purple-300 focus:outline-none focus:border-purple-500" placeholder="e.g. Alternate spelling, title, nickname">
                 </div>
 
+                <div id="edit-voice-desc-wrapper">
+                    <label class="block font-medium text-slate-400 mb-1 flex items-center gap-1.5">
+                        <i class="fa-solid fa-microphone-lines text-pink-400"></i> Voice Design Prompt (VoxCPM2)
+                    </label>
+                    <input type="text" id="edit-voice-desc" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-pink-300 focus:outline-none focus:border-pink-500" placeholder="e.g. หญิงสาววัยรุ่น เสียงหวานใส ร่าเริง หรือ ชายหนุ่มเสียงทุ้มมั่นใจ">
+                    <p class="text-[10px] text-slate-500 mt-1">Prompt for synthesizing speech whenever this character speaks.</p>
+                </div>
+
                 <div>
                     <label class="block font-medium text-slate-400 mb-1">Notes / Context</label>
                     <input type="text" id="edit-notes" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-300 focus:outline-none focus:border-indigo-500" placeholder="Optional context or lore notes">
@@ -406,10 +699,11 @@
             currentTab = tab;
             const charWrap = document.getElementById('characters-wrapper');
             const termWrap = document.getElementById('terms-wrapper');
+            const voicesWrap = document.getElementById('voices-wrapper');
             const container = document.getElementById('tables-container');
 
             // Update tab buttons
-            ['characters', 'terms', 'split'].forEach(t => {
+            ['characters', 'terms', 'voices', 'split'].forEach(t => {
                 const btn = document.getElementById('tab-btn-' + t);
                 if (btn) {
                     if (t === tab) {
@@ -424,15 +718,331 @@
                 container.className = 'space-y-6';
                 charWrap.classList.remove('hidden');
                 termWrap.classList.add('hidden');
+                if (voicesWrap) voicesWrap.classList.add('hidden');
             } else if (tab === 'terms') {
                 container.className = 'space-y-6';
                 charWrap.classList.add('hidden');
                 termWrap.classList.remove('hidden');
+                if (voicesWrap) voicesWrap.classList.add('hidden');
+            } else if (tab === 'voices') {
+                container.className = 'space-y-6';
+                charWrap.classList.add('hidden');
+                termWrap.classList.add('hidden');
+                if (voicesWrap) voicesWrap.classList.remove('hidden');
             } else if (tab === 'split') {
                 container.className = 'grid grid-cols-1 lg:grid-cols-2 gap-6';
                 charWrap.classList.remove('hidden');
                 termWrap.classList.remove('hidden');
+                if (voicesWrap) voicesWrap.classList.add('hidden');
             }
+        }
+
+        function scrollToVoiceCard(key) {
+            setTimeout(() => {
+                const el = document.getElementById('char-card-' + key);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('ring-2', 'ring-pink-500');
+                    setTimeout(() => el.classList.remove('ring-2', 'ring-pink-500'), 2500);
+                }
+            }, 100);
+        }
+
+        function setNarratorPrompt(text) {
+            document.getElementById('narrator-voice-prompt').value = text;
+        }
+
+        function appendPrompt(elemId, keyword) {
+            const el = document.getElementById(elemId);
+            if (!el) return;
+            let val = el.value.trim();
+            if (val) {
+                if (!val.endsWith(',')) val += ', ';
+                else val += ' ';
+            }
+            el.value = val + keyword;
+            el.focus();
+        }
+
+        async function saveVoicePrompt(voiceType, charName = null, key = null) {
+            let promptVal = '';
+            if (voiceType === 'narrator') {
+                promptVal = document.getElementById('narrator-voice-prompt').value.trim();
+            } else {
+                promptVal = document.getElementById('voice-prompt-' + key).value.trim();
+            }
+
+            try {
+                const resp = await fetch('/api/voices/update-prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_id: seriesId,
+                        target_lang: targetLang,
+                        voice_type: voiceType,
+                        character_name: charName,
+                        voice_description: promptVal,
+                    }),
+                });
+                if (resp.ok) {
+                    showVoiceToast('Voice prompt saved successfully!');
+                } else {
+                    const err = await resp.json();
+                    alert('Error saving prompt: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            }
+        }
+
+        async function generateVoice(voiceType, charName = null, key = null) {
+            const btn = voiceType === 'narrator' 
+                ? document.getElementById('btn-gen-narrator') 
+                : document.getElementById('btn-gen-' + key);
+
+            let promptVal = '';
+            let sampleVal = '';
+            if (voiceType === 'narrator') {
+                promptVal = document.getElementById('narrator-voice-prompt').value.trim();
+                sampleVal = document.getElementById('narrator-sample-text').value.trim();
+            } else {
+                promptVal = document.getElementById('voice-prompt-' + key).value.trim();
+                sampleVal = document.getElementById('sample-text-' + key).value.trim();
+            }
+
+            const origHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Synthesizing...';
+
+            try {
+                const resp = await fetch('/api/voices/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_id: seriesId,
+                        target_lang: targetLang,
+                        voice_type: voiceType,
+                        character_name: charName,
+                        voice_description: promptVal,
+                        sample_text: sampleVal,
+                    }),
+                });
+
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const audioEl = voiceType === 'narrator'
+                        ? document.getElementById('narrator-audio')
+                        : document.getElementById('audio-player-' + key);
+
+                    if (audioEl) {
+                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.load();
+                        audioEl.play().catch(() => {});
+                    }
+
+                    if (voiceType === 'narrator') {
+                        document.getElementById('narrator-status-badge').innerHTML = `
+                            <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Custom Voice Anchor Active
+                            </span>
+                        `;
+                        const delBtn = document.getElementById('btn-del-narrator');
+                        if (delBtn) delBtn.classList.remove('hidden');
+                    } else {
+                        const badge = document.getElementById('char-status-badge-' + key);
+                        if (badge) {
+                            badge.innerHTML = `
+                                <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Anchor Set
+                                </span>
+                            `;
+                        }
+                        const delBtn = document.getElementById('btn-del-' + key);
+                        if (delBtn) delBtn.classList.remove('hidden');
+                        const card = document.getElementById('char-card-' + key);
+                        if (card) card.dataset.hasref = 'true';
+                    }
+
+                    showVoiceToast('Reference voice generated and anchored!');
+                } else {
+                    const err = await resp.json();
+                    alert('Synthesis failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+        }
+
+        async function uploadVoiceFile(voiceType, charName, fileInput, key = null) {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('series_id', seriesId);
+            formData.append('target_lang', targetLang);
+            formData.append('voice_type', voiceType);
+            if (charName) formData.append('character_name', charName);
+
+            showVoiceToast('Uploading and processing audio reference...');
+
+            try {
+                const resp = await fetch('/api/voices/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const audioEl = voiceType === 'narrator'
+                        ? document.getElementById('narrator-audio')
+                        : document.getElementById('audio-player-' + key);
+
+                    if (audioEl) {
+                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.load();
+                        audioEl.play().catch(() => {});
+                    }
+
+                    if (voiceType === 'narrator') {
+                        document.getElementById('narrator-status-badge').innerHTML = `
+                            <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Custom Voice Anchor Active
+                            </span>
+                        `;
+                        const delBtn = document.getElementById('btn-del-narrator');
+                        if (delBtn) delBtn.classList.remove('hidden');
+                    } else {
+                        const badge = document.getElementById('char-status-badge-' + key);
+                        if (badge) {
+                            badge.innerHTML = `
+                                <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Anchor Set
+                                </span>
+                            `;
+                        }
+                        const delBtn = document.getElementById('btn-del-' + key);
+                        if (delBtn) delBtn.classList.remove('hidden');
+                        const card = document.getElementById('char-card-' + key);
+                        if (card) card.dataset.hasref = 'true';
+                    }
+
+                    showVoiceToast('Audio uploaded and anchored successfully!');
+                } else {
+                    const err = await resp.json();
+                    alert('Upload failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            } finally {
+                fileInput.value = '';
+            }
+        }
+
+        async function deleteVoice(voiceType, charName, key = null) {
+            const label = voiceType === 'narrator' ? 'Narrator' : charName;
+            if (!confirm(`Are you sure you want to delete reference audio anchor for ${label}? Chapter generation will revert to default voice.`)) {
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/voices/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_id: seriesId,
+                        target_lang: targetLang,
+                        voice_type: voiceType,
+                        character_name: charName,
+                    }),
+                });
+
+                if (resp.ok) {
+                    if (voiceType === 'narrator') {
+                        document.getElementById('narrator-status-badge').innerHTML = `
+                            <span class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 shadow-sm">
+                                <span class="w-2 h-2 rounded-full bg-slate-500"></span> Default Voice
+                            </span>
+                        `;
+                        const audioEl = document.getElementById('narrator-audio');
+                        if (audioEl) { audioEl.src = ''; }
+                        const delBtn = document.getElementById('btn-del-narrator');
+                        if (delBtn) delBtn.classList.add('hidden');
+                    } else {
+                        const badge = document.getElementById('char-status-badge-' + key);
+                        if (badge) {
+                            badge.innerHTML = `
+                                <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-500 border border-slate-700/60">
+                                    ⚪ Default
+                                </span>
+                            `;
+                        }
+                        const audioEl = document.getElementById('audio-player-' + key);
+                        if (audioEl) { audioEl.src = ''; }
+                        const delBtn = document.getElementById('btn-del-' + key);
+                        if (delBtn) delBtn.classList.add('hidden');
+                        const card = document.getElementById('char-card-' + key);
+                        if (card) card.dataset.hasref = 'false';
+                    }
+                    showVoiceToast('Reference audio deleted.');
+                } else {
+                    const err = await resp.json();
+                    alert('Delete failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Network error: ' + err.message);
+            }
+        }
+
+        let voiceFilterGender = 'all';
+        function filterVoiceGender(gender) {
+            voiceFilterGender = gender;
+            document.querySelectorAll('.voice-filter-pill').forEach(btn => {
+                if (btn.dataset.vfilter === gender) {
+                    btn.classList.add('active', 'bg-indigo-600', 'text-white');
+                    btn.classList.remove('text-slate-400');
+                } else {
+                    btn.classList.remove('active', 'bg-indigo-600', 'text-white');
+                    btn.classList.add('text-slate-400');
+                }
+            });
+            filterVoiceCards();
+        }
+
+        function filterVoiceCards() {
+            const q = (document.getElementById('voice-char-search').value || '').trim().toLowerCase();
+            document.querySelectorAll('.char-voice-card').forEach(card => {
+                const name = (card.dataset.name || '').toLowerCase();
+                const target = (card.dataset.target || '').toLowerCase();
+                const gender = card.dataset.gender || 'neutral';
+                const hasRef = card.dataset.hasref === 'true';
+
+                const matchesQuery = !q || name.includes(q) || target.includes(q);
+                let matchesFilter = true;
+                if (voiceFilterGender === 'male') matchesFilter = (gender === 'male');
+                else if (voiceFilterGender === 'female') matchesFilter = (gender === 'female');
+                else if (voiceFilterGender === 'has_ref') matchesFilter = hasRef;
+
+                card.style.display = (matchesQuery && matchesFilter) ? '' : 'none';
+            });
+        }
+
+        function showVoiceToast(msg) {
+            let toast = document.getElementById('voice-toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'voice-toast';
+                toast.className = 'fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl bg-slate-900 border border-indigo-500/50 text-white text-xs shadow-2xl flex items-center gap-2 transition-all transform duration-300 translate-y-10 opacity-0 pointer-events-none';
+                document.body.appendChild(toast);
+            }
+            toast.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400"></i> <span>${msg}</span>`;
+            toast.classList.remove('translate-y-10', 'opacity-0', 'pointer-events-none');
+            setTimeout(() => {
+                toast.classList.add('translate-y-10', 'opacity-0', 'pointer-events-none');
+            }, 3000);
         }
 
         function filterCategory(cat) {
@@ -482,7 +1092,7 @@
             }
         }
 
-        function openEditModal(type, name, target, roleOrCat, aliases, notes, gender) {
+        function openEditModal(type, name, target, roleOrCat, aliases, notes, gender, voiceDesc) {
             document.getElementById('edit-type').value = type;
             document.getElementById('edit-old-key').value = name;
             document.getElementById('edit-name').value = name;
@@ -495,15 +1105,21 @@
             const titleEl = document.getElementById('modal-title');
             const labelEl = document.getElementById('role-category-label');
             const genderWrap = document.getElementById('edit-gender-wrapper');
+            const voiceWrap = document.getElementById('edit-voice-desc-wrapper');
 
             if (type === 'character') {
                 titleEl.innerHTML = '<i class="fa-solid fa-user-ninja text-purple-400"></i> Edit Character';
                 labelEl.innerText = 'Character Role';
                 genderWrap.classList.remove('hidden');
+                if (voiceWrap) {
+                    voiceWrap.classList.remove('hidden');
+                    document.getElementById('edit-voice-desc').value = voiceDesc || '';
+                }
             } else {
                 titleEl.innerHTML = '<i class="fa-solid fa-tags text-indigo-400"></i> Edit Term';
                 labelEl.innerText = 'Category (gaming, skill, item, monster, location, general)';
                 genderWrap.classList.add('hidden');
+                if (voiceWrap) voiceWrap.classList.add('hidden');
             }
 
             document.getElementById('edit-modal').classList.remove('hidden');
@@ -523,6 +1139,7 @@
             const gender = document.getElementById('edit-gender').value;
             const rawAliases = document.getElementById('edit-aliases').value;
             const notes = document.getElementById('edit-notes').value.trim();
+            const voiceDesc = document.getElementById('edit-voice-desc') ? document.getElementById('edit-voice-desc').value.trim() : null;
 
             const aliases = rawAliases.split(',').map(a => a.trim()).filter(Boolean);
 
@@ -541,6 +1158,7 @@
                         role_or_category: roleOrCat,
                         aliases: aliases,
                         notes: notes,
+                        voice_description: type === 'character' ? voiceDesc : null,
                     }),
                 });
 
@@ -585,7 +1203,13 @@
 
         // Initialize view
         document.addEventListener('DOMContentLoaded', () => {
-            switchTab('characters');
+            const urlParams = new URLSearchParams(window.location.search);
+            const initialTab = urlParams.get('tab') || (window.location.hash ? window.location.hash.replace('#', '') : 'characters');
+            if (['characters', 'terms', 'voices', 'split'].includes(initialTab)) {
+                switchTab(initialTab);
+            } else {
+                switchTab('characters');
+            }
         });
     </script>
     {% include "settings_modal.html" %}

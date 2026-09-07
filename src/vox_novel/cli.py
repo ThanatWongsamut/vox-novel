@@ -546,3 +546,63 @@ def _review_entities_cli(new_terms: list, new_chars: list, knowledge: SeriesKnow
                 knowledge.add_term(t["source"], custom_tgt, category=t.get("category", "general"))
 
     return True
+
+
+@app.command(name="tts")
+def tts_chapter_cmd(
+    series_id: str = typer.Argument(..., help="Series ID (e.g. 36119734008764305)"),
+    chapter_id: str = typer.Argument(..., help="Chapter ID"),
+    engine: str = typer.Option("voxcpm2", "--engine", "-e", help="TTS engine (voxcpm2, dummy)"),
+    voice: Optional[str] = typer.Option(None, "--voice", "-v", help="Voice design prompt description"),
+    api_url: Optional[str] = typer.Option(None, "--api-url", help="Remote VoxCPM2 / vLLM-Omni API URL"),
+    device: Optional[str] = typer.Option(None, "--device", help="Device (auto, mps, cuda, cpu)"),
+):
+    """Synthesize chapter into Thai audiobook using VoxCPM2 TTS."""
+    pipeline = NovelPipeline()
+
+    kwargs = {}
+    if api_url:
+        kwargs["api_url"] = api_url
+    if device:
+        kwargs["device"] = device
+
+    async def _run():
+        console.print(Panel(
+            f"[bold magenta]🎙️ VoxNovel Audio Synthesis[/bold magenta]\n"
+            f"[bold]Series ID:[/bold] {series_id}\n"
+            f"[bold]Chapter ID:[/bold] {chapter_id}\n"
+            f"[bold]Engine:[/bold] {engine}\n"
+            f"[bold]Voice Design:[/bold] {voice or 'Default Narrator Voice'}",
+            title="VoxCPM2 Audiobook Generator",
+            border_style="magenta",
+        ))
+
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Generating audiobook...", total=100)
+
+            async def progress_cb(pct: int, msg: str):
+                progress.update(task, completed=pct, description=f"[cyan]{msg}[/cyan]")
+
+            try:
+                audio_file = await pipeline.synthesize_chapter_audio(
+                    series_id=series_id,
+                    chapter_id=chapter_id,
+                    engine_name=engine,
+                    voice_description=voice,
+                    progress_callback=progress_cb,
+                    engine_kwargs=kwargs,
+                )
+                progress.update(task, completed=100, description="[bold green]Complete![/bold green]")
+                console.print(f"\n[bold green]✅ Audio saved to:[/bold green] {audio_file}")
+            except Exception as e:
+                console.print(f"\n[bold red]❌ Synthesis failed:[/bold red] {e}")
+
+    asyncio.run(_run())
+

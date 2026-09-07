@@ -77,6 +77,32 @@
                 </div>
             </div>
 
+            <!-- VoxCPM2 TTS Settings -->
+            <div class="border-t border-slate-800 pt-3 space-y-2">
+                <div class="flex items-center justify-between">
+                    <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                        <i class="fa-solid fa-volume-high text-pink-400"></i> VoxCPM2 TTS Engine
+                    </label>
+                    <span class="text-[10px] text-pink-400/80 bg-pink-500/10 px-2 py-0.5 rounded border border-pink-500/20">Thai Voice Design</span>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-[11px] text-slate-400 block mb-1">Local Device</label>
+                        <select id="setting-voxcpm-device" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500 text-xs">
+                            <option value="auto">Auto (MPS on Mac / CUDA)</option>
+                            <option value="mps">Apple Silicon (MPS)</option>
+                            <option value="cuda">NVIDIA GPU (CUDA)</option>
+                            <option value="cpu">CPU Fallback</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-[11px] text-slate-400 block mb-1">Remote Server URL (Optional)</label>
+                        <input type="text" id="setting-voxcpm-url" placeholder="http://gpu-server:8001" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500">Leave Remote URL blank to use local engine. Or point to a self-hosted vLLM-Omni / VoxCPM endpoint.</p>
+            </div>
+
             <!-- Status banner -->
             <div id="settings-status-banner" class="hidden p-2.5 rounded-xl text-xs flex items-center gap-2"></div>
 
@@ -118,6 +144,15 @@
 
                 if (data.gemini_api_key) {
                     geminiInput.value = data.gemini_api_key;
+                }
+
+                const voxcpmUrlInput = document.getElementById('setting-voxcpm-url');
+                const voxcpmDeviceSelect = document.getElementById('setting-voxcpm-device');
+                if (voxcpmUrlInput && data.voxcpm_api_url !== undefined) {
+                    voxcpmUrlInput.value = data.voxcpm_api_url;
+                }
+                if (voxcpmDeviceSelect && data.voxcpm_device) {
+                    voxcpmDeviceSelect.value = data.voxcpm_device;
                 }
 
                 // Handle model selection
@@ -219,6 +254,9 @@
         btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Saving...';
 
         try {
+            const voxcpmUrlInput = document.getElementById('setting-voxcpm-url');
+            const voxcpmDeviceSelect = document.getElementById('setting-voxcpm-device');
+
             const resp = await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -226,6 +264,8 @@
                     openrouter_api_key: keyInput.value.trim(),
                     openrouter_model: chosenModel,
                     gemini_api_key: geminiInput.value.trim(),
+                    voxcpm_api_url: voxcpmUrlInput ? voxcpmUrlInput.value.trim() : "",
+                    voxcpm_device: voxcpmDeviceSelect ? voxcpmDeviceSelect.value : "auto",
                 })
             });
 

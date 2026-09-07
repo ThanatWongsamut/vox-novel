@@ -12,6 +12,42 @@ def sanitize_filename(name: str) -> str:
     return clean[:80]
 
 
+class UnsafePathSegment(ValueError):
+    """Raised when an untrusted identifier cannot be used as a filesystem path segment."""
+
+
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+
+
+def character_voice_key(name: str) -> str:
+    """Derive the filesystem key for a character's reference voice.
+
+    Character names are free-form (Thai, spaces, punctuation), so instead of
+    rejecting them we strip everything that could escape the voices directory.
+    """
+    base = (name or "").strip().lower()
+    # Remove path separators, Windows-reserved characters and control codes. A
+    # denylist keeps non-ASCII names (Thai combining marks included) intact, which
+    # an alphanumeric allowlist would silently mangle into colliding keys.
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]+', "_", base)
+    base = re.sub(r"[\s\-_]+", "_", base).strip("._ ")
+    return base[:80] or "unnamed"
+
+
+def validate_path_segment(value: Optional[str], field: str = "identifier") -> str:
+    """Validate an untrusted identifier used as a single directory/file name.
+
+    Rejects path separators, traversal, absolute paths and empty values so that
+    callers can safely join the result onto a storage root.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise UnsafePathSegment(f"Missing {field}")
+    if raw in (".", "..") or not _SAFE_SEGMENT_RE.match(raw):
+        raise UnsafePathSegment(f"Invalid {field}: {raw!r}")
+    return raw
+
+
 def get_chapter_file_prefix(chapter: Chapter) -> str:
     if chapter.chapter_number is not None:
         if chapter.chapter_number.is_integer():
@@ -45,9 +81,10 @@ class StorageManager:
             return f"/api/cover/{series_id}"
 
         try:
+            referer = "https://readtoon.com/" if any(k in cover_url.lower() for k in ["nobuild.pro", "readtoon"]) else "https://www.webnovel.com/"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Referer": "https://www.webnovel.com/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "Referer": referer,
             }
             resp = httpx.get(cover_url, headers=headers, timeout=10.0, follow_redirects=True)
             if resp.status_code == 200 and len(resp.content) > 500:
@@ -59,8 +96,12 @@ class StorageManager:
         return cover_url
 
     def get_local_cover_file(self, series_id: str) -> Optional[Path]:
-        p = self.base_dir / series_id / "cover.jpg"
-        return p if p.exists() else None
+        for ext in [".jpg", ".jpeg", ".webp", ".png"]:
+            p = self.base_dir / series_id / f"cover{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        return None
+
 
     def list_saved_series(self) -> List[Novel]:
         novels = []
@@ -107,6 +148,79 @@ class StorageManager:
             f.write(novel.model_dump_json(indent=2))
         return meta_file
 
+    def get_voices_dir(self, series_id: str) -> Path:
+        voices_dir = self.base_dir / series_id / "voices"
+        voices_dir.mkdir(parents=True, exist_ok=True)
+        return voices_dir
+
+    def get_narrator_voice_file(self, series_id: str) -> Optional[Path]:
+        voices_dir = self.get_voices_dir(series_id)
+        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+            p = voices_dir / f"narrator_ref{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        return None
+
+    def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
+        voices_dir = self.get_voices_dir(series_id)
+        safe_key = character_voice_key(character_name)
+        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+            p = voices_dir / f"{safe_key}_ref{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        for f in voices_dir.glob(f"*{safe_key}*"):
+            if f.is_file() and f.stat().st_size > 0 and f.suffix.lower() in [".wav", ".mp3", ".m4a", ".flac"]:
+                return f
+        return None
+
+    def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
+        voices_dir = self.get_voices_dir(series_id)
+        if voice_type == "narrator":
+            target = self.get_narrator_voice_file(series_id)
+            if target and target.exists():
+                target.unlink()
+                return True
+        elif character_name:
+            target = self.get_character_voice_file(series_id, character_name)
+            if target and target.exists():
+                target.unlink()
+                return True
+        return False
+
+    def get_chapter(self, series_id: str, chapter_id: str) -> Optional[Chapter]:
+        chapters_dir = self.base_dir / series_id / "chapters"
+        if not chapters_dir.exists():
+            return None
+        for jf in chapters_dir.glob("*.json"):
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("id") == chapter_id:
+                        return Chapter.model_validate(data)
+            except Exception:
+                pass
+        return None
+
+    def get_chapter_audio_file(self, series_id: str, chapter_id: str) -> Optional[Path]:
+        chapters_dir = self.base_dir / series_id / "chapters"
+        if not chapters_dir.exists():
+            return None
+        # Check standard chapter_<id>.wav
+        p1 = chapters_dir / f"chapter_{chapter_id}.wav"
+        if p1.exists():
+            return p1
+        p1_mp3 = chapters_dir / f"chapter_{chapter_id}.mp3"
+        if p1_mp3.exists():
+            return p1_mp3
+        # Check matching prefix.wav
+        for wf in chapters_dir.glob("*.wav"):
+            if chapter_id in wf.stem:
+                return wf
+        for mf in chapters_dir.glob("*.mp3"):
+            if chapter_id in mf.stem:
+                return mf
+        return None
+
     def get_translated_chapter_ids(self, series_id: str, target_lang: str = "th") -> Dict[str, dict]:
         novel_dir = self.base_dir / series_id
         chapters_dir = novel_dir / "chapters"
@@ -118,14 +232,21 @@ class StorageManager:
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    cid = data.get("id")
                     if data.get("target_language") == target_lang or data.get("translated_title"):
-                        translated[data["id"]] = {
+                        has_audio = (
+                            (chapters_dir / f"chapter_{cid}.wav").exists()
+                            or (chapters_dir / f"{json_file.stem}.wav").exists()
+                            or bool(data.get("audio_path") and Path(data["audio_path"]).exists())
+                        )
+                        translated[cid] = {
                             "title": data.get("translated_title") or data.get("title"),
                             "original_title": data.get("title"),
                             "target_language": data.get("target_language"),
                             "chapter_number": data.get("chapter_number"),
                             "json_path": str(json_file),
                             "md_path": str(json_file.with_suffix(".md")),
+                            "has_audio": has_audio,
                         }
             except Exception:
                 pass
@@ -144,6 +265,16 @@ class StorageManager:
             legacy_json.unlink()
         if legacy_md.exists():
             legacy_md.unlink()
+
+        # Drop stale text files for this chapter number left behind by a title change.
+        # Only .json/.md are removed here: audio artifacts must survive a re-import.
+        if chapter.chapter_number is not None and chapter.chapter_number.is_integer():
+            num_tag = f"ch_{int(chapter.chapter_number):04d}"
+            keep = {f"{prefix}.json", f"{prefix}.md"}
+            for suffix in (".json", ".md"):
+                for old_f in chapters_dir.glob(f"{num_tag} - *{suffix}"):
+                    if old_f.name not in keep:
+                        old_f.unlink(missing_ok=True)
 
         json_file = chapters_dir / f"{prefix}.json"
         with open(json_file, "w", encoding="utf-8") as f:

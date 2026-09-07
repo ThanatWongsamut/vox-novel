@@ -9,6 +9,9 @@ class Paragraph(BaseModel):
     text: str
     translated_text: Optional[str] = None
     audio_path: Optional[str] = None
+    speaker: Optional[str] = None  # e.g. "narrator" or character name
+    emotion: Optional[str] = None  # e.g. "calm", "angry", "fearful", "whisper", "urgent"
+    speech_type: Optional[str] = None  # "narration" or "dialogue"
 
 
 class Chapter(BaseModel):
@@ -21,6 +24,7 @@ class Chapter(BaseModel):
     translated_title: Optional[str] = None
     source_language: str = "en"
     target_language: Optional[str] = None
+    audio_path: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -42,6 +46,7 @@ class ChapterSummary(BaseModel):
     url: str
     chapter_number: Optional[float] = None
     is_locked: bool = False
+    has_audio: bool = False
 
 
 class Novel(BaseModel):

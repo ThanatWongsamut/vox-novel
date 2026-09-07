@@ -34,6 +34,8 @@ def get_app_settings() -> Dict[str, Any]:
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    voxcpm_url = os.getenv("VOXCPM_API_URL", "")
+    voxcpm_device = os.getenv("VOXCPM_DEVICE", "auto")
 
     return {
         "openrouter_api_key": mask_key(openrouter_key),
@@ -41,6 +43,8 @@ def get_app_settings() -> Dict[str, Any]:
         "openrouter_model": model,
         "gemini_api_key": mask_key(gemini_key),
         "gemini_api_key_set": bool(gemini_key.strip()),
+        "voxcpm_api_url": voxcpm_url,
+        "voxcpm_device": voxcpm_device,
     }
 
 
@@ -67,6 +71,16 @@ def save_app_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     if new_gemini_key and "..." not in new_gemini_key:
         updates["GEMINI_API_KEY"] = new_gemini_key
         os.environ["GEMINI_API_KEY"] = new_gemini_key
+
+    if "voxcpm_api_url" in data:
+        new_voxcpm_url = data.get("voxcpm_api_url", "").strip()
+        updates["VOXCPM_API_URL"] = new_voxcpm_url
+        os.environ["VOXCPM_API_URL"] = new_voxcpm_url
+
+    if "voxcpm_device" in data:
+        new_voxcpm_device = data.get("voxcpm_device", "auto").strip()
+        updates["VOXCPM_DEVICE"] = new_voxcpm_device
+        os.environ["VOXCPM_DEVICE"] = new_voxcpm_device
 
     # Update or append keys in .env
     updated_keys = set()

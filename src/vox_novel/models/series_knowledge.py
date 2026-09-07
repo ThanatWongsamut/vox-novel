@@ -19,6 +19,8 @@ class CharacterProfile(BaseModel):
     aliases: List[str] = Field(default_factory=list)
     relationship_tones: Dict[str, str] = Field(default_factory=dict)
     notes: Optional[str] = None
+    voice_description: Optional[str] = None  # Text prompt for Voice Design
+    voice_ref_audio: Optional[str] = None    # Path to saved reference audio clip
 
 
 class SeriesKnowledge(BaseModel):
@@ -29,6 +31,10 @@ class SeriesKnowledge(BaseModel):
     source_language: str = "en"
     terms: Dict[str, TermMapping] = Field(default_factory=dict)
     characters: Dict[str, CharacterProfile] = Field(default_factory=dict)
+    narrator_voice_description: Optional[str] = (
+        "เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
+    )
+    narrator_voice_ref_audio: Optional[str] = None
     style_guidelines: List[str] = Field(default_factory=list)
     custom_system_prompt: Optional[str] = None
     last_updated: datetime = Field(default_factory=datetime.utcnow)
@@ -59,16 +65,49 @@ class SeriesKnowledge(BaseModel):
         return re.sub(r"[\s\-_]+", "", name.strip().lower())
 
     def find_character(self, query: str) -> Optional[CharacterProfile]:
-        """Find an existing character by exact name, normalized key, or alias."""
+        """Find an existing character by exact name, normalized key, target name, or alias."""
         norm_query = self._normalize_name_key(query)
-        # Check direct keys
+        # Check direct keys and target name
         for key, char in self.characters.items():
-            if self._normalize_name_key(key) == norm_query or self._normalize_name_key(char.name_en) == norm_query:
+            if (
+                self._normalize_name_key(key) == norm_query
+                or self._normalize_name_key(char.name_en) == norm_query
+                or self._normalize_name_key(char.name_target) == norm_query
+            ):
                 return char
             for alias in char.aliases:
                 if self._normalize_name_key(alias) == norm_query:
                     return char
         return None
+
+    def update_narrator_voice(
+        self,
+        voice_description: Optional[str] = None,
+        voice_ref_audio: Optional[str] = None,
+    ):
+        """Update narrator voice prompt and/or reference audio anchor."""
+        if voice_description is not None:
+            self.narrator_voice_description = voice_description
+        if voice_ref_audio is not None:
+            self.narrator_voice_ref_audio = voice_ref_audio
+        self.last_updated = datetime.utcnow()
+
+    def update_character_voice(
+        self,
+        name_en: str,
+        voice_description: Optional[str] = None,
+        voice_ref_audio: Optional[str] = None,
+    ) -> bool:
+        """Update character voice prompt and/or reference audio anchor."""
+        char = self.find_character(name_en)
+        if not char:
+            return False
+        if voice_description is not None:
+            char.voice_description = voice_description
+        if voice_ref_audio is not None:
+            char.voice_ref_audio = voice_ref_audio
+        self.last_updated = datetime.utcnow()
+        return True
 
     def add_character(
         self,
@@ -78,6 +117,8 @@ class SeriesKnowledge(BaseModel):
         role: Optional[str] = None,
         aliases: Optional[List[str]] = None,
         notes: Optional[str] = None,
+        voice_description: Optional[str] = None,
+        voice_ref_audio: Optional[str] = None,
     ):
         clean_name = name_en.strip()
         key = clean_name.lower()
@@ -98,6 +139,10 @@ class SeriesKnowledge(BaseModel):
                 existing.role = role
             if notes and not existing.notes:
                 existing.notes = notes
+            if voice_description and not existing.voice_description:
+                existing.voice_description = voice_description
+            if voice_ref_audio and not existing.voice_ref_audio:
+                existing.voice_ref_audio = voice_ref_audio
             self.last_updated = datetime.utcnow()
             return
 
@@ -110,6 +155,10 @@ class SeriesKnowledge(BaseModel):
                 char.role = role
             if notes:
                 char.notes = notes
+            if voice_description:
+                char.voice_description = voice_description
+            if voice_ref_audio:
+                char.voice_ref_audio = voice_ref_audio
             for a in alias_list:
                 if a not in char.aliases and a.lower() != key:
                     char.aliases.append(a)
@@ -121,6 +170,8 @@ class SeriesKnowledge(BaseModel):
                 role=role,
                 aliases=alias_list,
                 notes=notes,
+                voice_description=voice_description,
+                voice_ref_audio=voice_ref_audio,
             )
         self.last_updated = datetime.utcnow()
 
