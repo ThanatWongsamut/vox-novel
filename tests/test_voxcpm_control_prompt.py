@@ -167,6 +167,49 @@ class TestControlPromptRobustness(unittest.TestCase):
         self.assertGreater(VoxCPM2TTS._min_len_for("x" * 500), VoxCPM2TTS._min_len_for("x" * 50))
 
 
+class TestControlPromptIsAsciiOnly(unittest.TestCase):
+    """VoxCPM2 only interprets English control prompts.
+
+    Verified by A/B: an English control steers the voice as asked, while a Thai
+    control is ignored as an instruction and spoken aloud before the content --
+    roughly 2.5x the audio length. So any non-Latin text reaching a control prompt
+    becomes audible garbage at the start of every paragraph.
+    """
+
+    DESCRIPTIONS = [
+        "เสียงบรรยายผู้หญิง อายุ 30 ปี เย็น ลึกลับ น่าหลงใหล",
+        "ชายชราอายุ 70 ปี เสียงทุ้มต่ำมาก แหบ ห้าว",
+        "เสียงแหบเล็กน้อยแบบคนเพิ่งตื่นนอน",   # no table entry matches
+        "ตัวละครชื่อ อาเธอร์ พูดจาสุภาพ",       # contains a proper noun
+        "混合中文描述",                          # a different non-Latin script
+        "a husky, authoritative male voice",
+        "",
+        None,
+    ]
+
+    def test_never_emits_non_ascii(self):
+        for desc in self.DESCRIPTIONS:
+            out = VoxCPM2TTS.build_control_prompt(desc)
+            self.assertTrue(out.isascii(), f"{desc!r} -> {out!r}")
+
+    def test_never_emits_non_ascii_with_emotion(self):
+        for desc in self.DESCRIPTIONS:
+            out = VoxCPM2TTS.build_control_prompt(desc, emotion="โกรธมาก")
+            self.assertTrue(out.isascii(), f"{desc!r} -> {out!r}")
+
+    def test_always_returns_something_usable(self):
+        for desc in self.DESCRIPTIONS:
+            out = VoxCPM2TTS.build_control_prompt(desc)
+            self.assertTrue(out.strip(), f"{desc!r} produced an empty control")
+
+    def test_designed_text_keeps_thai_content_but_ascii_control(self):
+        control = VoxCPM2TTS.build_control_prompt("ชายชราอายุ 70 ปี เสียงทุ้ม")
+        designed = VoxCPM2TTS.format_designed_text("สวัสดีค่ะ", control)
+        head = designed[: designed.index(")") + 1]
+        self.assertTrue(head.isascii(), head)
+        self.assertIn("สวัสดีค่ะ", designed)
+
+
 class TestVoxCPMPatchGuard(unittest.TestCase):
     def test_patch_targets_a_pinned_version(self):
         # The patch is a copy of upstream's _inference; it must not be applied to a
