@@ -494,6 +494,11 @@ class VoxCPM2TTS(BaseTTS):
         # A refusal or an explanation rather than a descriptor list.
         if re.search(r"\b(sorry|cannot|as an ai|i can't|unable)\b", text, re.I):
             return None
+        # A control prompt is comma-separated descriptors. A colon means we got a
+        # label instead -- a moderation router answering "User Safety: safe", or a
+        # model prefixing its answer -- which would be synthesized as voice direction.
+        if ":" in text:
+            return None
         return text
 
     @classmethod

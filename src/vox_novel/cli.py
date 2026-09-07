@@ -188,7 +188,7 @@ def chapter(
         "openrouter", "--translator", help="Translator backend: 'openrouter', 'gemini', or 'dummy'"
     ),
     model: str = typer.Option(
-        "minimax/minimax-m3:free", "--model", "-m", help="Model name (e.g. minimax/minimax-m3:free, z-ai/glm-5.2:free)"
+        "google/gemma-4-31b-it:free", "--model", "-m", help="Model name (e.g. google/gemma-4-31b-it:free, z-ai/glm-5.2:free)"
     ),
     auto_learn: bool = typer.Option(
         True, "--auto-learn/--no-auto-learn", help="Automatically learn new terms/characters per series"
@@ -407,7 +407,7 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
     translator_choice = questionary.select(
         f"Translate '{selected_chapter.title}' using:",
         choices=[
-            "OpenRouter (minimax/minimax-m3:free) [Recommended]",
+            "OpenRouter (google/gemma-4-31b-it:free) [Recommended]",
             "OpenRouter (z-ai/glm-5.2:free)",
             "OpenRouter (google/gemma-4-31b-it:free)",
             "Google Gemini (gemini-2.5-flash)",
@@ -419,7 +419,7 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
         return
 
     translator_name = "openrouter"
-    model_name = "minimax/minimax-m3:free"
+    model_name = "google/gemma-4-31b-it:free"
 
     if "Dummy" in translator_choice:
         translator_name = "dummy"

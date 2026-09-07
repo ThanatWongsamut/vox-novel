@@ -33,7 +33,7 @@ def get_app_settings() -> Dict[str, Any]:
     """Return the current application settings for the Web UI."""
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
-    model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    model = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     voxcpm_url = os.getenv("VOXCPM_API_URL", "")
     voxcpm_device = os.getenv("VOXCPM_DEVICE", "auto")
 

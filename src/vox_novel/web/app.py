@@ -475,7 +475,7 @@ async def translate_chapter(
 ):
     series_id = safe_id(series_id, "series_id")
     agentic_mode = agentic.lower() in ("true", "1", "yes", "on")
-    chosen_model = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    chosen_model = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     translator_name = "openrouter" if os.getenv("OPENROUTER_API_KEY") else "dummy"
 
     # Start background job immediately so user gets live SSE progress from second 0
@@ -591,7 +591,7 @@ async def confirm_translation(request: Request):
     form_data = await request.form()
     series_id = form_data.get("series_id")
     chapter_url = form_data.get("chapter_url")
-    model = form_data.get("model") or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    model = form_data.get("model") or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     target_lang = form_data.get("target_lang", "th")
     agentic_val = form_data.get("agentic", "true")
     agentic_mode = str(agentic_val).lower() in ("true", "1", "yes", "on")

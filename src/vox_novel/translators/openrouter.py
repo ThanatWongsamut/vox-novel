@@ -19,7 +19,7 @@ load_dotenv()
 
 
 class OpenRouterTranslator(BaseTranslator):
-    """Translation engine using OpenRouter API supporting models like minimax/minimax-m3:free."""
+    """Translation engine using OpenRouter API supporting models like google/gemma-4-31b-it:free."""
 
     DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -32,7 +32,7 @@ class OpenRouterTranslator(BaseTranslator):
         timeout: float = 120.0,
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        self.model_name = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+        self.model_name = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
         
         if fallback_models is not None:
             self.fallback_models = fallback_models

@@ -49,7 +49,7 @@ class NovelPipeline:
         if chapter.source_language == target_lang:
             return [], [], series_knowledge
 
-        chosen_model = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+        chosen_model = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
         translator = translator_registry.get_translator(translator_name, model=chosen_model)
         if isinstance(translator, OpenRouterTranslator):
             new_terms, new_chars = await translator.detect_new_entities_for_review(
@@ -193,7 +193,7 @@ class NovelPipeline:
             return None
         try:
             return translator_registry.get_translator(
-                "openrouter", model=os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+                "openrouter", model=os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
             )
         except Exception:
             return None
