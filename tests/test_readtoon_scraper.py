@@ -1,5 +1,9 @@
 import unittest
-from vox_novel.scrapers.readtoon import ReadtoonScraper
+from vox_novel.scrapers.readtoon import (
+    ReadtoonScraper,
+    classify_speech_type,
+    split_html_paragraphs,
+)
 from vox_novel.scrapers.registry import registry
 
 
@@ -33,6 +37,36 @@ class TestReadtoonScraper(unittest.TestCase):
     def test_registry_integration(self):
         scraper = registry.get_scraper_for_url("https://readtoon.com/content/novel-test")
         self.assertIsInstance(scraper, ReadtoonScraper)
+
+
+class TestParagraphExtraction(unittest.TestCase):
+    """The scraper and the Chrome extension must produce identical paragraphs."""
+
+    def test_splits_on_br_and_paragraph_tags(self):
+        html = "<p>one</p><p>two<br>three</p><p>four</p>"
+        self.assertEqual(split_html_paragraphs(html), ["one", "two", "three", "four"])
+
+    def test_drops_blank_segments(self):
+        html = "<p>one</p><p>   </p><p></p><p>two</p>"
+        self.assertEqual(split_html_paragraphs(html), ["one", "two"])
+
+    def test_strips_inline_markup_and_unescapes_entities(self):
+        html = "<p>a <em>bold</em> &amp; brave &quot;line&quot;</p>"
+        self.assertEqual(split_html_paragraphs(html), ['a bold & brave "line"'])
+
+    def test_handles_thai_content(self):
+        html = "<p>บรรทัดหนึ่ง<br>บรรทัดสอง</p>"
+        self.assertEqual(split_html_paragraphs(html), ["บรรทัดหนึ่ง", "บรรทัดสอง"])
+
+
+class TestSpeechClassification(unittest.TestCase):
+    def test_recognizes_all_dialogue_openers(self):
+        for opener in ['"hi"', "\u201chi\u201d", "\u300chi\u300d", "\u300ehi\u300f"]:
+            self.assertEqual(classify_speech_type(opener), "dialogue", opener)
+
+    def test_plain_text_is_narration(self):
+        self.assertEqual(classify_speech_type("เขาเดินไป"), "narration")
+        self.assertEqual(classify_speech_type(""), "narration")
 
 
 if __name__ == "__main__":

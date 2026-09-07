@@ -4086,6 +4086,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "numpy" },
     { name = "playwright" },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -4095,6 +4096,10 @@ dependencies = [
     { name = "soundfile" },
     { name = "typer" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+tts = [
     { name = "voxcpm" },
 ]
 
@@ -4106,6 +4111,7 @@ requires-dist = [
     { name = "google-genai", specifier = ">=2.22.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "playwright", specifier = ">=1.62.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
@@ -4115,8 +4121,9 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "typer", specifier = ">=0.27.2" },
     { name = "uvicorn", specifier = ">=0.52.4" },
-    { name = "voxcpm", specifier = ">=2.0.3" },
+    { name = "voxcpm", marker = "extra == 'tts'", specifier = ">=2.0.3" },
 ]
+provides-extras = ["tts"]
 
 [[package]]
 name = "voxcpm"

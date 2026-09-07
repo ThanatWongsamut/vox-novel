@@ -584,7 +584,7 @@
 
                             <!-- Audio Player -->
                             <div class="space-y-1.5 pt-1">
-                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en }}{% if has_ref %}?v=1{% endif %}">
+                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}{% if has_ref %}?v=1{% endif %}">
                                     Your browser does not support the audio element.
                                 </audio>
                             </div>

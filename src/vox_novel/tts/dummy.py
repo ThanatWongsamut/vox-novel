@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 from typing import Any, Callable, Optional
 import numpy as np
@@ -9,9 +10,23 @@ from vox_novel.tts.base import BaseTTS
 class DummyTTS(BaseTTS):
     """Generates synthetic audio for testing the TTS pipeline without GPU."""
 
+    def __init__(self, **kwargs):
+        # Accept (and ignore) engine options such as api_url/device so the CLI can
+        # pass the same flags to any registered engine.
+        self.options = kwargs
+
     @property
     def name(self) -> str:
         return "dummy"
+
+    @staticmethod
+    async def _report(progress_callback, pct: int, msg: str) -> None:
+        """Invoke a progress callback that may be sync or async."""
+        if not progress_callback:
+            return
+        result = progress_callback(pct, msg)
+        if inspect.isawaitable(result):
+            await result
 
     async def synthesize(
         self,
@@ -53,12 +68,17 @@ class DummyTTS(BaseTTS):
         pause = np.zeros(int(sample_rate * 0.3), dtype=np.float32)
 
         for idx, p in enumerate(valid_paras):
-            if progress_callback:
-                pct = int((idx / total) * 100)
-                await progress_callback(pct, f"Synthesizing paragraph {idx + 1}/{total} (Dummy TTS)...")
-            
+            pct = int((idx / total) * 100)
+            await self._report(progress_callback, pct, f"Synthesizing paragraph {idx + 1}/{total} (Dummy TTS)...")
+
             t = np.linspace(0, 0.8, int(sample_rate * 0.8), endpoint=False)
             tone = (0.05 * np.sin(2 * np.pi * 350 * t)).astype(np.float32)
+
+            # Key chunks by Paragraph.index so /api/audio/.../para/{index} resolves them.
+            chunk_file = output_dir / f"para_{chapter.id}_{p.index}.wav"
+            sf.write(chunk_file, tone, sample_rate)
+            p.audio_path = str(chunk_file)
+
             audio_chunks.append(tone)
             audio_chunks.append(pause)
 
@@ -68,7 +88,7 @@ class DummyTTS(BaseTTS):
         combined = np.concatenate(audio_chunks)
         sf.write(final_file, combined, sample_rate)
         
-        if progress_callback:
-            await progress_callback(100, "Audio synthesis complete!")
+        chapter.audio_path = str(final_file)
+        await self._report(progress_callback, 100, "Audio synthesis complete!")
 
         return final_file

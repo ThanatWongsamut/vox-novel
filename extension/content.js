@@ -40,8 +40,11 @@
     if (h1 && h1.textContent.trim()) {
       seriesTitle = h1.textContent.trim();
     }
-    const breadcrumbSeriesLink = document.querySelector(`a[href="/content/${seriesId}"]`) ||
-                                 document.querySelector(`a[href*="/content/${seriesId}"]`);
+    const escapedSeriesId = seriesId ? CSS.escape(seriesId) : "";
+    const breadcrumbSeriesLink = escapedSeriesId
+      ? document.querySelector(`a[href="/content/${escapedSeriesId}"]`) ||
+        document.querySelector(`a[href*="/content/${escapedSeriesId}"]`)
+      : null;
     if (breadcrumbSeriesLink && breadcrumbSeriesLink.textContent.trim()) {
       seriesTitle = breadcrumbSeriesLink.textContent.trim();
     }
@@ -113,6 +116,15 @@
     };
   }
 
+  function isSafeHttpUrl(candidate) {
+    try {
+      const parsed = new URL(candidate);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch (e) {
+      return false;
+    }
+  }
+
   function showToast({ type = "info", title, message, actionText, actionUrl }) {
     const existing = document.getElementById("vox-novel-toast");
     if (existing) existing.remove();
@@ -121,19 +133,37 @@
     toast.id = "vox-novel-toast";
     toast.className = type;
 
-    let actionBtnHtml = "";
-    if (actionText && actionUrl) {
-      actionBtnHtml = `<a href="${actionUrl}" target="_blank" class="vox-toast-action">${actionText}</a>`;
-    }
+    const header = document.createElement("div");
+    header.className = `vox-toast-header ${type}`;
 
-    toast.innerHTML = `
-      <div class="vox-toast-header ${type}">
-        <span>${title}</span>
-        <span style="cursor: pointer; opacity: 0.7;" onclick="this.closest('#vox-novel-toast').remove()">✕</span>
-      </div>
-      <div class="vox-toast-body">${message}</div>
-      ${actionBtnHtml}
-    `;
+    const titleEl = document.createElement("span");
+    titleEl.textContent = title || "";
+    header.appendChild(titleEl);
+
+    const closeEl = document.createElement("span");
+    closeEl.textContent = "\u2715";
+    closeEl.style.cursor = "pointer";
+    closeEl.style.opacity = "0.7";
+    closeEl.addEventListener("click", () => toast.remove());
+    header.appendChild(closeEl);
+
+    const body = document.createElement("div");
+    body.className = "vox-toast-body";
+    body.textContent = message || "";
+
+    toast.appendChild(header);
+    toast.appendChild(body);
+
+    // Only same-origin http(s) links from our own server are rendered as actions.
+    if (actionText && actionUrl && isSafeHttpUrl(actionUrl)) {
+      const link = document.createElement("a");
+      link.href = actionUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "vox-toast-action";
+      link.textContent = actionText;
+      toast.appendChild(link);
+    }
 
     document.body.appendChild(toast);
 
@@ -150,7 +180,7 @@
 
   async function performImport() {
     const btn = document.getElementById("vox-novel-import-btn");
-    if (!btn) return;
+    if (!btn) return { ok: false, error: "Import button not available on this page." };
 
     const originalHtml = btn.innerHTML;
     btn.classList.add("loading");
@@ -166,7 +196,7 @@
         title: "Content Not Found",
         message: "Could not find chapter text in page. If this is a paid chapter, make sure it is unlocked and visible.",
       });
-      return;
+      return { ok: false, error: "No chapter content found on page." };
     }
 
     const serverUrl = await getServerUrl();
@@ -208,18 +238,17 @@
       showToast({
         type: "success",
         title: "Import Complete!",
-        message: `Successfully saved ${details.chapterTitle || "Chapter"} (${details.paragraphs.length} paragraphs). Opening VoxNovel Reader...`,
-        actionText: "Open in VoxNovel Reader ↗",
+        message: `Successfully saved ${details.chapterTitle || "Chapter"} (${details.paragraphs.length} paragraphs).`,
+        actionText: "Open in VoxNovel Reader \u2197",
         actionUrl: readerFullUrl,
       });
-
-      // Automatically open VoxNovel Reader in a new tab
-      window.open(readerFullUrl, "_blank");
 
       setTimeout(() => {
         btn.innerHTML = originalHtml;
         btn.style.background = "";
       }, 5000);
+
+      return { ok: true, readUrl: readerFullUrl };
     } catch (err) {
       console.error("[VoxNovel]", err);
       btn.classList.remove("loading");
@@ -236,14 +265,21 @@
         btn.innerHTML = originalHtml;
         btn.style.background = "";
       }, 4000);
+
+      return { ok: false, error: err.message };
     }
   }
 
-  function injectFloatingButton() {
-    if (document.getElementById("vox-novel-import-btn")) return;
+  function syncFloatingButton() {
+    const existing = document.getElementById("vox-novel-import-btn");
+    const onChapterPage = window.location.pathname.includes("/content/");
 
-    // Only inject on content / chapter pages
-    if (!window.location.pathname.includes("/content/")) return;
+    // Client-side navigation can take us off a chapter page: drop a stale button.
+    if (!onChapterPage) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
 
     const btn = document.createElement("button");
     btn.id = "vox-novel-import-btn";
@@ -272,7 +308,10 @@
         const details = extractPageDetails();
         sendResponse({ ok: true, details });
       } else if (request.action === "IMPORT_NOW") {
-        performImport().then(() => sendResponse({ ok: true }));
+        performImport().then(
+          (result) => sendResponse(result || { ok: false, error: "Import produced no result." }),
+          (err) => sendResponse({ ok: false, error: String((err && err.message) || err) })
+        );
         return true; // async
       }
     });
@@ -280,17 +319,23 @@
 
   // Inject when DOM is ready
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectFloatingButton);
+    document.addEventListener("DOMContentLoaded", syncFloatingButton);
   } else {
-    injectFloatingButton();
+    syncFloatingButton();
   }
 
-  // Re-check periodically in case Next.js performs client-side navigation
+  // Next.js navigates client-side. A content script runs in an isolated world, so
+  // it cannot patch the page's history.pushState -- poll the URL instead, and stop
+  // once the page goes away.
   let lastUrl = window.location.href;
-  setInterval(() => {
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      injectFloatingButton();
-    }
-  }, 1000);
+  function onLocationChange() {
+    if (window.location.href === lastUrl) return;
+    lastUrl = window.location.href;
+    syncFloatingButton();
+  }
+
+  const urlPoll = setInterval(onLocationChange, 1000);
+  window.addEventListener("popstate", onLocationChange);
+  window.addEventListener("hashchange", onLocationChange);
+  window.addEventListener("pagehide", () => clearInterval(urlPoll), { once: true });
 })();

@@ -12,6 +12,42 @@ def sanitize_filename(name: str) -> str:
     return clean[:80]
 
 
+class UnsafePathSegment(ValueError):
+    """Raised when an untrusted identifier cannot be used as a filesystem path segment."""
+
+
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+
+
+def character_voice_key(name: str) -> str:
+    """Derive the filesystem key for a character's reference voice.
+
+    Character names are free-form (Thai, spaces, punctuation), so instead of
+    rejecting them we strip everything that could escape the voices directory.
+    """
+    base = (name or "").strip().lower()
+    # Remove path separators, Windows-reserved characters and control codes. A
+    # denylist keeps non-ASCII names (Thai combining marks included) intact, which
+    # an alphanumeric allowlist would silently mangle into colliding keys.
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]+', "_", base)
+    base = re.sub(r"[\s\-_]+", "_", base).strip("._ ")
+    return base[:80] or "unnamed"
+
+
+def validate_path_segment(value: Optional[str], field: str = "identifier") -> str:
+    """Validate an untrusted identifier used as a single directory/file name.
+
+    Rejects path separators, traversal, absolute paths and empty values so that
+    callers can safely join the result onto a storage root.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise UnsafePathSegment(f"Missing {field}")
+    if raw in (".", "..") or not _SAFE_SEGMENT_RE.match(raw):
+        raise UnsafePathSegment(f"Invalid {field}: {raw!r}")
+    return raw
+
+
 def get_chapter_file_prefix(chapter: Chapter) -> str:
     if chapter.chapter_number is not None:
         if chapter.chapter_number.is_integer():
@@ -127,7 +163,7 @@ class StorageManager:
 
     def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
         voices_dir = self.get_voices_dir(series_id)
-        safe_key = re.sub(r"[\s\-_]+", "_", character_name.strip().lower())
+        safe_key = character_voice_key(character_name)
         for ext in [".wav", ".mp3", ".m4a", ".flac"]:
             p = voices_dir / f"{safe_key}_ref{ext}"
             if p.exists() and p.stat().st_size > 0:
@@ -230,11 +266,15 @@ class StorageManager:
         if legacy_md.exists():
             legacy_md.unlink()
 
+        # Drop stale text files for this chapter number left behind by a title change.
+        # Only .json/.md are removed here: audio artifacts must survive a re-import.
         if chapter.chapter_number is not None and chapter.chapter_number.is_integer():
             num_tag = f"ch_{int(chapter.chapter_number):04d}"
-            for old_f in chapters_dir.glob(f"{num_tag} - *"):
-                if old_f.name not in (f"{prefix}.json", f"{prefix}.md"):
-                    old_f.unlink(missing_ok=True)
+            keep = {f"{prefix}.json", f"{prefix}.md"}
+            for suffix in (".json", ".md"):
+                for old_f in chapters_dir.glob(f"{num_tag} - *{suffix}"):
+                    if old_f.name not in keep:
+                        old_f.unlink(missing_ok=True)
 
         json_file = chapters_dir / f"{prefix}.json"
         with open(json_file, "w", encoding="utf-8") as f:

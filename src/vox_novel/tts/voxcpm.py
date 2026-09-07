@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import logging
 import os
 import re
@@ -36,6 +37,10 @@ class VoxCPM2TTS(BaseTTS):
         self.sample_rate = sample_rate
         self._local_model = None
         self._warned_local = False
+        self._ref_cache_key: Optional[tuple] = None
+        self._ref_cache_value: Optional[str] = None
+        # Set when output came from the placeholder tone rather than a real model.
+        self.used_placeholder = False
 
     @property
     def name(self) -> str:
@@ -115,8 +120,7 @@ class VoxCPM2TTS(BaseTTS):
         }
 
         if reference_audio and Path(reference_audio).exists():
-            with open(reference_audio, "rb") as f:
-                payload["reference_audio"] = base64.b64encode(f.read()).decode("utf-8")
+            payload["reference_audio"] = self._encoded_reference(Path(reference_audio))
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             endpoints = [f"{url}/v1/audio/speech", f"{url}/synthesize"]
@@ -126,12 +130,24 @@ class VoxCPM2TTS(BaseTTS):
                     if resp.status_code == 200:
                         import io
                         audio_data, sr = sf.read(io.BytesIO(resp.content))
+                        # Honour the server's rate, otherwise the stitched file plays
+                        # back at the wrong speed.
+                        self.sample_rate = int(sr)
                         return audio_data.astype(np.float32)
                 except Exception as e:
                     logger.debug(f"Endpoint {ep} failed: {e}")
                     continue
 
         return None
+
+    def _encoded_reference(self, path: Path) -> str:
+        """Base64-encode a reference clip once, keyed by path and mtime."""
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if self._ref_cache_key != key:
+            self._ref_cache_key = key
+            self._ref_cache_value = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return self._ref_cache_value
 
     def _generate_synthetic_placeholder(self, text: str) -> np.ndarray:
         """
@@ -193,10 +209,20 @@ class VoxCPM2TTS(BaseTTS):
         # 3. Fallback to placeholder if unconfigured
         if audio_array is None:
             logger.info("Using synthetic placeholder tone (real model weights not loaded).")
+            self.used_placeholder = True
             audio_array = self._generate_synthetic_placeholder(text)
 
         sf.write(output_file, audio_array, self.sample_rate)
         return output_file
+
+    @staticmethod
+    async def _report(progress_callback, pct: int, msg: str) -> None:
+        """Invoke a progress callback that may be sync or async."""
+        if not progress_callback:
+            return
+        result = progress_callback(pct, msg)
+        if inspect.isawaitable(result):
+            await result
 
     async def synthesize_chapter(
         self,
@@ -223,8 +249,9 @@ class VoxCPM2TTS(BaseTTS):
 
         total = max(len(valid_paras), 1)
         audio_segments: List[np.ndarray] = []
-        pause_samples = int(self.sample_rate * 0.35)  # 350ms pause between paragraphs
-        pause = np.zeros(pause_samples, dtype=np.float32)
+        # The engine may only learn its true rate after the first synthesis
+        # (a remote server picks it), so the 350ms pause is sized per chunk below.
+        chunk_rate: Optional[int] = None
 
         narrator_desc = voice_description
         if not narrator_desc and knowledge and getattr(knowledge, "narrator_voice_description", None):
@@ -257,11 +284,10 @@ class VoxCPM2TTS(BaseTTS):
             text_to_speak = (p.translated_text if use_translated else p.text).strip()
             
             # Progress reporting
-            if progress_callback:
-                pct = int((idx / total) * 95)
-                speaker_tag = f"[{p.speaker}] " if p.speaker else ""
-                short_text = (text_to_speak[:25] + "...") if len(text_to_speak) > 25 else text_to_speak
-                await progress_callback(pct, f"Synthesizing {idx + 1}/{total}: {speaker_tag}{short_text}")
+            pct = int((idx / total) * 95)
+            speaker_tag = f"[{p.speaker}] " if p.speaker else ""
+            short_text = (text_to_speak[:25] + "...") if len(text_to_speak) > 25 else text_to_speak
+            await self._report(progress_callback, pct, f"Synthesizing {idx + 1}/{total}: {speaker_tag}{short_text}")
 
             # Determine voice & emotion for this paragraph (character-specific voice or narrator)
             para_voice_desc = default_desc
@@ -290,8 +316,8 @@ class VoxCPM2TTS(BaseTTS):
                     if char.voice_description:
                         para_voice_desc = char.voice_description
 
-            # Clean and synthesize chunk
-            chunk_file = output_dir / f"para_{chapter.id}_{idx}.wav"
+            # Key chunks by Paragraph.index so /api/audio/.../para/{index} resolves them.
+            chunk_file = output_dir / f"para_{chapter.id}_{p.index}.wav"
             await self.synthesize(
                 text=text_to_speak,
                 output_file=chunk_file,
@@ -305,23 +331,37 @@ class VoxCPM2TTS(BaseTTS):
                 data, sr = sf.read(chunk_file)
                 if data.ndim > 1:
                     data = data.mean(axis=1)  # Convert stereo to mono
+                if chunk_rate is None:
+                    chunk_rate = int(sr)
+                elif int(sr) != chunk_rate:
+                    logger.warning(
+                        f"Sample rate changed mid-chapter ({chunk_rate} -> {sr}); "
+                        f"skipping {chunk_file} to avoid distorted playback."
+                    )
+                    continue
                 audio_segments.append(data.astype(np.float32))
-                audio_segments.append(pause)
+                audio_segments.append(np.zeros(int(chunk_rate * 0.35), dtype=np.float32))
                 p.audio_path = str(chunk_file)
             except Exception as e:
                 logger.warning(f"Failed to read paragraph audio chunk {chunk_file}: {e}")
 
-        if progress_callback:
-            await progress_callback(96, "Stitching chapter audio...")
+        await self._report(progress_callback, 96, "Stitching chapter audio...")
 
+        if chunk_rate is None:
+            chunk_rate = self.sample_rate
         if not audio_segments:
-            audio_segments.append(np.zeros(self.sample_rate, dtype=np.float32))
+            audio_segments.append(np.zeros(chunk_rate, dtype=np.float32))
 
         combined = np.concatenate(audio_segments)
-        sf.write(final_file, combined, self.sample_rate)
+        sf.write(final_file, combined, chunk_rate)
         chapter.audio_path = str(final_file)
 
-        if progress_callback:
-            await progress_callback(100, "Audiobook generation complete!")
+        done_msg = (
+            "Audiobook generated with PLACEHOLDER tones -- no VoxCPM weights or "
+            "VOXCPM_API_URL configured."
+            if self.used_placeholder
+            else "Audiobook generation complete!"
+        )
+        await self._report(progress_callback, 100, done_msg)
 
         return final_file

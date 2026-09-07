@@ -2,12 +2,34 @@ import asyncio
 import json
 import os
 import re
+from html import unescape
 from typing import List, Optional
 import httpx
 from bs4 import BeautifulSoup
 
 from vox_novel.models.domain import Chapter, ChapterSummary, Novel, Paragraph
 from vox_novel.scrapers.base import BaseScraper
+
+# Opening quote marks that mark a paragraph as spoken dialogue.
+DIALOGUE_OPENERS = ('"', "\u201c", "\u300c", "\u300e")
+
+
+def classify_speech_type(text: str) -> str:
+    return "dialogue" if text.startswith(DIALOGUE_OPENERS) else "narration"
+
+
+def split_html_paragraphs(html: str) -> List[str]:
+    """Split chapter HTML into paragraphs.
+
+    Mirrors the Chrome extension's DOM extraction so a chapter scraped here and
+    one imported through the extension yield identical paragraph indices.
+    """
+    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*p\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*div\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = unescape(text)
+    return [seg.strip() for seg in re.split(r"\n+", text) if seg.strip()]
 
 
 class ReadtoonScraper(BaseScraper):
@@ -187,6 +209,7 @@ class ReadtoonScraper(BaseScraper):
             if not browser:
                 raise RuntimeError("Failed to launch Playwright browser (neither Google Chrome nor Chromium available).")
 
+            context = None
             try:
                 context = await browser.new_context(
                     user_agent=self.DEFAULT_HEADERS["User-Agent"],
@@ -199,7 +222,10 @@ class ReadtoonScraper(BaseScraper):
                 if auth_token:
                     try:
                         await page.goto("https://readtoon.com", wait_until="domcontentloaded", timeout=10000)
-                        await page.evaluate(f"localStorage.setItem('_$AuthToken', '{auth_token}');")
+                        await page.evaluate(
+                            "token => localStorage.setItem('_$AuthToken', token)",
+                            auth_token,
+                        )
                     except Exception:
                         pass
 
@@ -223,11 +249,7 @@ class ReadtoonScraper(BaseScraper):
                     raise ValueError(f"Novel content container (div.prose.mx-auto) not found on {chapter_url}")
 
                 html_content = await content_el.inner_html()
-                # Convert <br> tags to newlines
-                html_content = re.sub(r"<br\s*/?>", "\n", html_content)
-                # Strip remaining HTML tags
-                soup_text = re.sub(r"<[^>]+>", "", html_content)
-                raw_paragraphs = [p.strip() for p in soup_text.split("\n") if p.strip()]
+                raw_paragraphs = split_html_paragraphs(html_content)
 
                 if not raw_paragraphs:
                     raise ValueError(f"No text extracted from chapter {chapter_no} on {chapter_url}")
@@ -249,7 +271,7 @@ class ReadtoonScraper(BaseScraper):
                             index=i,
                             text=p_text,
                             translated_text=p_text,
-                            speech_type="dialogue" if any(p_text.startswith(q) for q in ('"', "“", "「", "「")) else "narration",
+                            speech_type=classify_speech_type(p_text),
                         )
                     )
 
@@ -271,4 +293,6 @@ class ReadtoonScraper(BaseScraper):
                     },
                 )
             finally:
+                if context is not None:
+                    await context.close()
                 await browser.close()
