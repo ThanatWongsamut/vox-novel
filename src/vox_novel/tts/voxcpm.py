@@ -59,6 +59,134 @@ class VoxCPM2TTS(BaseTTS):
             pass
         return "cpu"
 
+    @classmethod
+    def _patch_voxcpm_inference(cls):
+        """
+        Patch VoxCPM2Model._inference to avoid premature stop cutoffs:
+        1. Once stop_flag == 1 is first detected, generate 1 extra acoustic patch
+           so the vocal tract / diffusion model smoothly completes the final phoneme
+           release and natural decay into silence.
+        2. Supports both non-streaming and streaming generation.
+        """
+        try:
+            from voxcpm.model.voxcpm2 import VoxCPM2Model
+
+            if getattr(VoxCPM2Model, "_voxnovel_patched", False):
+                return
+
+            def patched_inference(
+                self,
+                text,
+                text_mask,
+                feat,
+                feat_mask,
+                min_len=2,
+                max_len=2000,
+                inference_timesteps=10,
+                cfg_value=2.0,
+                streaming=False,
+                streaming_prefix_len=4,
+            ):
+                import torch
+                from einops import rearrange
+
+                B, T, P, D = feat.shape
+                prefill_encoder = getattr(self, "_feat_encoder_raw", self.feat_encoder)
+                feat_embed = prefill_encoder(feat)
+                feat_embed = self.enc_to_lm_proj(feat_embed)
+                scale_emb = self.config.lm_config.scale_emb if self.config.lm_config.use_mup else 1.0
+                text_embed = self.base_lm.embed_tokens(text) * scale_emb
+                combined_embed = text_mask.unsqueeze(-1) * text_embed + feat_mask.unsqueeze(-1) * feat_embed
+                prefix_feat_cond = feat[:, -1, ...]
+
+                has_continuation_audio = feat_mask[0, -1].item() == 1
+                context_len = 0
+                if has_continuation_audio:
+                    audio_indices = feat_mask.squeeze(0).nonzero(as_tuple=True)[0]
+                    context_len = min(streaming_prefix_len - 1, len(audio_indices))
+                    last_audio_indices = audio_indices[-context_len:]
+                    pred_feat_seq = list(feat[:, last_audio_indices, :, :].split(1, dim=1))
+                else:
+                    pred_feat_seq = []
+
+                enc_outputs, kv_cache_tuple = self.base_lm(inputs_embeds=combined_embed, is_causal=True)
+                self.base_lm.kv_cache.fill_caches(kv_cache_tuple)
+                enc_outputs = (
+                    self.fsq_layer(enc_outputs) * feat_mask.unsqueeze(-1) + enc_outputs * text_mask.unsqueeze(-1)
+                )
+                lm_hidden = enc_outputs[:, -1, :]
+
+                residual_enc_inputs = self.fusion_concat_proj(
+                    torch.cat((enc_outputs, feat_mask.unsqueeze(-1) * feat_embed), dim=-1)
+                )
+                residual_enc_outputs, residual_kv_cache_tuple = self.residual_lm(
+                    inputs_embeds=residual_enc_inputs, is_causal=True
+                )
+                self.residual_lm.kv_cache.fill_caches(residual_kv_cache_tuple)
+                residual_hidden = residual_enc_outputs[:, -1, :]
+
+                stop_detected = False
+                extra_steps_remaining = 1
+
+                for i in range(max_len):
+                    dit_hidden_1 = self.lm_to_dit_proj(lm_hidden)
+                    dit_hidden_2 = self.res_to_dit_proj(residual_hidden)
+                    dit_hidden = torch.cat((dit_hidden_1, dit_hidden_2), dim=-1)
+
+                    pred_feat = self.feat_decoder(
+                        mu=dit_hidden,
+                        patch_size=self.patch_size,
+                        cond=prefix_feat_cond.transpose(1, 2).contiguous(),
+                        n_timesteps=inference_timesteps,
+                        cfg_value=cfg_value,
+                    ).transpose(1, 2)
+
+                    curr_embed = self.feat_encoder(pred_feat.unsqueeze(1))
+                    curr_embed = self.enc_to_lm_proj(curr_embed)
+                    pred_feat_seq.append(pred_feat.unsqueeze(1))
+                    prefix_feat_cond = pred_feat
+
+                    if streaming:
+                        feat_pred = rearrange(
+                            pred_feat.unsqueeze(1), "b t p d -> b d (t p)", b=B, p=self.patch_size
+                        )
+                        yield feat_pred, pred_feat_seq, context_len
+                        if len(pred_feat_seq) > streaming_prefix_len:
+                            pred_feat_seq = pred_feat_seq[-streaming_prefix_len:]
+
+                    stop_flag = (
+                        self.stop_head(self.stop_actn(self.stop_proj(lm_hidden))).argmax(dim=-1)[0].cpu().item()
+                    )
+
+                    if i > min_len and stop_flag == 1:
+                        if not stop_detected:
+                            stop_detected = True
+                        if extra_steps_remaining <= 0:
+                            break
+                        extra_steps_remaining -= 1
+
+                    lm_hidden = self.base_lm.forward_step(
+                        curr_embed[:, 0, :], torch.tensor([self.base_lm.kv_cache.step()], device=curr_embed.device)
+                    ).clone()
+                    lm_hidden = self.fsq_layer(lm_hidden)
+                    curr_residual_input = self.fusion_concat_proj(torch.cat((lm_hidden, curr_embed[:, 0, :]), dim=-1))
+                    residual_hidden = self.residual_lm.forward_step(
+                        curr_residual_input,
+                        torch.tensor([self.residual_lm.kv_cache.step()], device=curr_embed.device),
+                    ).clone()
+
+                if not streaming:
+                    pred_feat_seq = torch.cat(pred_feat_seq, dim=1)
+                    feat_pred = rearrange(pred_feat_seq, "b t p d -> b d (t p)", b=B, p=self.patch_size)
+                    generated_feat = pred_feat_seq[:, context_len:, :, :].squeeze(0).cpu()
+                    yield feat_pred, generated_feat, context_len
+
+            VoxCPM2Model._inference = patched_inference
+            VoxCPM2Model._voxnovel_patched = True
+            logger.info("VoxCPM2Model runtime patched with smooth release and anti-cutoff protection.")
+        except Exception as e:
+            logger.warning(f"Could not patch VoxCPM inference: {e}")
+
     def _get_local_model(self):
         """Lazy load VoxCPM model locally."""
         if self._local_model is not None:
@@ -66,6 +194,8 @@ class VoxCPM2TTS(BaseTTS):
 
         try:
             from voxcpm import VoxCPM
+
+            self._patch_voxcpm_inference()
             device = self._resolve_device()
             logger.info(f"Loading VoxCPM2 model ({self.model_name}) on device: {device}...")
             self._local_model = VoxCPM.from_pretrained(
@@ -261,6 +391,44 @@ class VoxCPM2TTS(BaseTTS):
         return core
 
     @staticmethod
+    def prepare_text_for_tts(text: str) -> str:
+        """
+        Normalize text for TTS synthesis to prevent abrupt token cutoff:
+        - Normalizes trailing quotes, ellipses, and unpunctuated Thai/English sentences.
+        - Ensures text ends with a natural punctuation mark or trailing space so the
+          language model and acoustic vocoder complete the final word cadence.
+        """
+        t = (text or "").strip()
+        if not t:
+            return t
+
+        quote_match = re.search(r'([\"\'”’])$', t)
+        if quote_match:
+            quote_char = quote_match.group(1)
+            inner = t[:-1].rstrip()
+            if inner and not inner.endswith((".", "!", "?", "…", "...", "—", ":", ";")):
+                return f"{inner}.{quote_char} "
+            return f"{inner}{quote_char} "
+
+        if not t.endswith((".", "!", "?", "…", "...", "—", ":", ";")):
+            return f"{t}."
+        return f"{t} "
+
+    @staticmethod
+    def _apply_tail_fadeout(audio: np.ndarray, sample_rate: int = 48000, fade_ms: float = 20.0) -> np.ndarray:
+        """
+        Apply a smooth cosine fade-out on the last fade_ms milliseconds of audio
+        to prevent any abrupt cutoff pops or clicks at chunk boundaries.
+        """
+        fade_len = int(sample_rate * (fade_ms / 1000.0))
+        if len(audio) <= fade_len:
+            return audio
+        fade_curve = (np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(audio.dtype)
+        out = audio.copy()
+        out[-fade_len:] *= fade_curve
+        return out
+
+    @staticmethod
     def format_designed_text(text: str, control: Optional[str]) -> str:
         control_clean = (control or "").strip()
         if not control_clean:
@@ -355,13 +523,14 @@ class VoxCPM2TTS(BaseTTS):
         output_file.parent.mkdir(parents=True, exist_ok=True)
         audio_array = None
 
+        prepared_text = self.prepare_text_for_tts(text)
         control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
 
         # 1. Try remote API first if configured
         if self.api_url:
             try:
                 audio_array = await self._call_remote_api(
-                    text=text,
+                    text=prepared_text,
                     voice_description=voice_description,
                     reference_audio=reference_audio,
                     emotion=emotion,
@@ -375,16 +544,19 @@ class VoxCPM2TTS(BaseTTS):
             if model is not None:
                 try:
                     kwargs: dict[str, Any] = {}
+                    # Calculate sensible min_len to avoid early termination on short pauses
+                    kwargs["min_len"] = max(2, int(len(prepared_text) * 0.08))
+
                     if reference_audio and Path(reference_audio).exists():
                         kwargs["reference_wav_path"] = str(reference_audio)
                         if emotion:
                             emotion_ctrl = self.build_control_prompt(None, emotion=emotion)
-                            kwargs["text"] = self.format_designed_text(text, emotion_ctrl)
+                            kwargs["text"] = self.format_designed_text(prepared_text, emotion_ctrl)
                         else:
-                            kwargs["text"] = text
+                            kwargs["text"] = prepared_text
                     else:
                         # Voice Design / Prompt-to-Voice mode
-                        kwargs["text"] = self.format_designed_text(text, control_prompt)
+                        kwargs["text"] = self.format_designed_text(prepared_text, control_prompt)
                         kwargs["cfg_value"] = 2.5
 
                     audio_array = await asyncio.to_thread(model.generate, **kwargs)
@@ -397,7 +569,11 @@ class VoxCPM2TTS(BaseTTS):
         if audio_array is None:
             logger.info("Using synthetic placeholder tone (real model weights not loaded).")
             self.used_placeholder = True
-            audio_array = self._generate_synthetic_placeholder(text)
+            audio_array = self._generate_synthetic_placeholder(prepared_text)
+
+        # Apply smooth tail micro-fadeout to ensure absolutely zero clipping or clicks
+        if audio_array is not None and len(audio_array) > 0:
+            audio_array = self._apply_tail_fadeout(audio_array, self.sample_rate)
 
         sf.write(output_file, audio_array, self.sample_rate)
         return output_file

@@ -67,6 +67,40 @@ class TestVoxCPMControlPrompt(unittest.TestCase):
         plain = VoxCPM2TTS.format_designed_text("สวัสดีครับ", None)
         self.assertEqual(plain, "สวัสดีครับ")
 
+    def test_prepare_text_for_tts(self):
+        # 1. Plain unpunctuated Thai sentence gets period
+        res1 = VoxCPM2TTS.prepare_text_for_tts("สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้")
+        self.assertEqual(res1, "สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้.")
+
+        # 2. Quoted dialogue without internal punctuation gets period before quote and trailing space
+        res2 = VoxCPM2TTS.prepare_text_for_tts('"แล้วไง สิ่งนั้นมันทำอะไรบ้างล่ะ"')
+        self.assertEqual(res2, '"แล้วไง สิ่งนั้นมันทำอะไรบ้างล่ะ." ')
+
+        # 3. Quoted dialogue with internal punctuation gets trailing space
+        res3 = VoxCPM2TTS.prepare_text_for_tts('"วงเวทอัญเชิญ?"')
+        self.assertEqual(res3, '"วงเวทอัญเชิญ?" ')
+
+        # 4. Quoted dialogue ending with ellipsis gets trailing space
+        res4 = VoxCPM2TTS.prepare_text_for_tts('"...มันหยิบชุดของคุณหนูมาใส่แล้วออกไปเดิน..."')
+        self.assertEqual(res4, '"...มันหยิบชุดของคุณหนูมาใส่แล้วออกไปเดิน..." ')
+
+        # 5. Sentence with exclamation mark
+        res5 = VoxCPM2TTS.prepare_text_for_tts("อ๊ะ! อยู่นี่ไง!")
+        self.assertEqual(res5, "อ๊ะ! อยู่นี่ไง! ")
+
+    def test_apply_tail_fadeout(self):
+        import numpy as np
+        # Create steady tone with high amplitude at the end
+        sr = 48000
+        audio = np.ones(sr, dtype=np.float32)
+        self.assertEqual(audio[-1], 1.0)
+
+        faded = VoxCPM2TTS._apply_tail_fadeout(audio, sample_rate=sr, fade_ms=20.0)
+        # End should be 0.0 or near 0.0
+        self.assertAlmostEqual(faded[-1], 0.0, places=5)
+        # Beginning should be unaffected
+        self.assertEqual(faded[0], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
