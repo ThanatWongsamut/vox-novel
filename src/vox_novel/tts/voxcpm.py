@@ -59,6 +59,35 @@ class VoxCPM2TTS(BaseTTS):
             pass
         return "cpu"
 
+    # The patch below is a copy of VoxCPM2Model._inference from this exact version,
+    # with a one-step delay added after the stop flag. Bump only after diffing the
+    # new upstream implementation and re-applying the change by hand.
+    PATCHED_VOXCPM_VERSION = "2.0.3"
+
+    # Upstream's parameter list at PATCHED_VOXCPM_VERSION. Checked before patching so
+    # a signature change fails loudly instead of silently reverting upstream to stale
+    # inference logic.
+    _EXPECTED_INFERENCE_PARAMS = (
+        "self", "text", "text_mask", "feat", "feat_mask", "min_len", "max_len",
+        "inference_timesteps", "cfg_value", "streaming", "streaming_prefix_len",
+    )
+
+    # Classifier-free guidance strength. Voice Design has only the text prompt to
+    # steer it, so it needs a stronger pull than cloning, which already has a
+    # reference clip anchoring the timbre.
+    CFG_VOICE_DESIGN = 2.5
+    CFG_CLONE = 2.0
+
+    # Floor on generated acoustic patches, as a fraction of input length. Without it
+    # the stop head can fire on an early pause and truncate the line; ~0.08 patches
+    # per character keeps short utterances from ending before the text is spoken.
+    MIN_LEN_PER_CHAR = 0.08
+    MIN_LEN_FLOOR = 2
+
+    @classmethod
+    def _min_len_for(cls, text: str) -> int:
+        return max(cls.MIN_LEN_FLOOR, int(len(text) * cls.MIN_LEN_PER_CHAR))
+
     @classmethod
     def _patch_voxcpm_inference(cls):
         """
@@ -67,125 +96,152 @@ class VoxCPM2TTS(BaseTTS):
            so the vocal tract / diffusion model smoothly completes the final phoneme
            release and natural decay into silence.
         2. Supports both non-streaming and streaming generation.
+
+        Raises RuntimeError if the installed voxcpm no longer matches the version
+        this patch was written against -- applying it blindly would replace a newer
+        upstream implementation with this stale copy.
         """
-        try:
-            from voxcpm.model.voxcpm2 import VoxCPM2Model
+        import inspect
 
-            if getattr(VoxCPM2Model, "_voxnovel_patched", False):
-                return
+        import torch
 
-            def patched_inference(
-                self,
-                text,
-                text_mask,
-                feat,
-                feat_mask,
-                min_len=2,
-                max_len=2000,
-                inference_timesteps=10,
-                cfg_value=2.0,
-                streaming=False,
-                streaming_prefix_len=4,
-            ):
-                import torch
-                from einops import rearrange
+        from voxcpm.model.voxcpm2 import VoxCPM2Model
 
-                B, T, P, D = feat.shape
-                prefill_encoder = getattr(self, "_feat_encoder_raw", self.feat_encoder)
-                feat_embed = prefill_encoder(feat)
-                feat_embed = self.enc_to_lm_proj(feat_embed)
-                scale_emb = self.config.lm_config.scale_emb if self.config.lm_config.use_mup else 1.0
-                text_embed = self.base_lm.embed_tokens(text) * scale_emb
-                combined_embed = text_mask.unsqueeze(-1) * text_embed + feat_mask.unsqueeze(-1) * feat_embed
-                prefix_feat_cond = feat[:, -1, ...]
+        if getattr(VoxCPM2Model, "_voxnovel_patched", False):
+            return
 
-                has_continuation_audio = feat_mask[0, -1].item() == 1
-                context_len = 0
-                if has_continuation_audio:
-                    audio_indices = feat_mask.squeeze(0).nonzero(as_tuple=True)[0]
-                    context_len = min(streaming_prefix_len - 1, len(audio_indices))
-                    last_audio_indices = audio_indices[-context_len:]
-                    pred_feat_seq = list(feat[:, last_audio_indices, :, :].split(1, dim=1))
-                else:
-                    pred_feat_seq = []
+        installed = cls._installed_voxcpm_version()
+        params = tuple(inspect.signature(VoxCPM2Model._inference).parameters)
+        if params != cls._EXPECTED_INFERENCE_PARAMS or installed != cls.PATCHED_VOXCPM_VERSION:
+            raise RuntimeError(
+                f"Cannot apply the VoxCPM cutoff patch: it targets voxcpm "
+                f"{cls.PATCHED_VOXCPM_VERSION} but found {installed or 'unknown'} "
+                f"with signature {params}. Re-derive the patch from the installed "
+                f"version, then update PATCHED_VOXCPM_VERSION."
+            )
 
-                enc_outputs, kv_cache_tuple = self.base_lm(inputs_embeds=combined_embed, is_causal=True)
-                self.base_lm.kv_cache.fill_caches(kv_cache_tuple)
-                enc_outputs = (
-                    self.fsq_layer(enc_outputs) * feat_mask.unsqueeze(-1) + enc_outputs * text_mask.unsqueeze(-1)
-                )
-                lm_hidden = enc_outputs[:, -1, :]
+        # Upstream runs inference under torch.inference_mode(); without it every
+        # synthesis builds autograd graphs across up to max_len diffusion steps.
+        @torch.inference_mode()
+        def patched_inference(
+            self,
+            text,
+            text_mask,
+            feat,
+            feat_mask,
+            min_len=2,
+            max_len=2000,
+            inference_timesteps=10,
+            cfg_value=2.0,
+            streaming=False,
+            streaming_prefix_len=4,
+        ):
+            import torch
+            from einops import rearrange
 
-                residual_enc_inputs = self.fusion_concat_proj(
-                    torch.cat((enc_outputs, feat_mask.unsqueeze(-1) * feat_embed), dim=-1)
-                )
-                residual_enc_outputs, residual_kv_cache_tuple = self.residual_lm(
-                    inputs_embeds=residual_enc_inputs, is_causal=True
-                )
-                self.residual_lm.kv_cache.fill_caches(residual_kv_cache_tuple)
-                residual_hidden = residual_enc_outputs[:, -1, :]
+            B, T, P, D = feat.shape
+            prefill_encoder = getattr(self, "_feat_encoder_raw", self.feat_encoder)
+            feat_embed = prefill_encoder(feat)
+            feat_embed = self.enc_to_lm_proj(feat_embed)
+            scale_emb = self.config.lm_config.scale_emb if self.config.lm_config.use_mup else 1.0
+            text_embed = self.base_lm.embed_tokens(text) * scale_emb
+            combined_embed = text_mask.unsqueeze(-1) * text_embed + feat_mask.unsqueeze(-1) * feat_embed
+            prefix_feat_cond = feat[:, -1, ...]
 
-                stop_detected = False
-                extra_steps_remaining = 1
+            has_continuation_audio = feat_mask[0, -1].item() == 1
+            context_len = 0
+            if has_continuation_audio:
+                audio_indices = feat_mask.squeeze(0).nonzero(as_tuple=True)[0]
+                context_len = min(streaming_prefix_len - 1, len(audio_indices))
+                last_audio_indices = audio_indices[-context_len:]
+                pred_feat_seq = list(feat[:, last_audio_indices, :, :].split(1, dim=1))
+            else:
+                pred_feat_seq = []
 
-                for i in range(max_len):
-                    dit_hidden_1 = self.lm_to_dit_proj(lm_hidden)
-                    dit_hidden_2 = self.res_to_dit_proj(residual_hidden)
-                    dit_hidden = torch.cat((dit_hidden_1, dit_hidden_2), dim=-1)
+            enc_outputs, kv_cache_tuple = self.base_lm(inputs_embeds=combined_embed, is_causal=True)
+            self.base_lm.kv_cache.fill_caches(kv_cache_tuple)
+            enc_outputs = (
+                self.fsq_layer(enc_outputs) * feat_mask.unsqueeze(-1) + enc_outputs * text_mask.unsqueeze(-1)
+            )
+            lm_hidden = enc_outputs[:, -1, :]
 
-                    pred_feat = self.feat_decoder(
-                        mu=dit_hidden,
-                        patch_size=self.patch_size,
-                        cond=prefix_feat_cond.transpose(1, 2).contiguous(),
-                        n_timesteps=inference_timesteps,
-                        cfg_value=cfg_value,
-                    ).transpose(1, 2)
+            residual_enc_inputs = self.fusion_concat_proj(
+                torch.cat((enc_outputs, feat_mask.unsqueeze(-1) * feat_embed), dim=-1)
+            )
+            residual_enc_outputs, residual_kv_cache_tuple = self.residual_lm(
+                inputs_embeds=residual_enc_inputs, is_causal=True
+            )
+            self.residual_lm.kv_cache.fill_caches(residual_kv_cache_tuple)
+            residual_hidden = residual_enc_outputs[:, -1, :]
 
-                    curr_embed = self.feat_encoder(pred_feat.unsqueeze(1))
-                    curr_embed = self.enc_to_lm_proj(curr_embed)
-                    pred_feat_seq.append(pred_feat.unsqueeze(1))
-                    prefix_feat_cond = pred_feat
+            stop_detected = False
+            extra_steps_remaining = 1
 
-                    if streaming:
-                        feat_pred = rearrange(
-                            pred_feat.unsqueeze(1), "b t p d -> b d (t p)", b=B, p=self.patch_size
-                        )
-                        yield feat_pred, pred_feat_seq, context_len
-                        if len(pred_feat_seq) > streaming_prefix_len:
-                            pred_feat_seq = pred_feat_seq[-streaming_prefix_len:]
+            for i in range(max_len):
+                dit_hidden_1 = self.lm_to_dit_proj(lm_hidden)
+                dit_hidden_2 = self.res_to_dit_proj(residual_hidden)
+                dit_hidden = torch.cat((dit_hidden_1, dit_hidden_2), dim=-1)
 
-                    stop_flag = (
-                        self.stop_head(self.stop_actn(self.stop_proj(lm_hidden))).argmax(dim=-1)[0].cpu().item()
+                pred_feat = self.feat_decoder(
+                    mu=dit_hidden,
+                    patch_size=self.patch_size,
+                    cond=prefix_feat_cond.transpose(1, 2).contiguous(),
+                    n_timesteps=inference_timesteps,
+                    cfg_value=cfg_value,
+                ).transpose(1, 2)
+
+                curr_embed = self.feat_encoder(pred_feat.unsqueeze(1))
+                curr_embed = self.enc_to_lm_proj(curr_embed)
+                pred_feat_seq.append(pred_feat.unsqueeze(1))
+                prefix_feat_cond = pred_feat
+
+                if streaming:
+                    feat_pred = rearrange(
+                        pred_feat.unsqueeze(1), "b t p d -> b d (t p)", b=B, p=self.patch_size
                     )
+                    yield feat_pred, pred_feat_seq, context_len
+                    if len(pred_feat_seq) > streaming_prefix_len:
+                        pred_feat_seq = pred_feat_seq[-streaming_prefix_len:]
 
-                    if i > min_len and stop_flag == 1:
-                        if not stop_detected:
-                            stop_detected = True
-                        if extra_steps_remaining <= 0:
-                            break
-                        extra_steps_remaining -= 1
+                stop_flag = (
+                    self.stop_head(self.stop_actn(self.stop_proj(lm_hidden))).argmax(dim=-1)[0].cpu().item()
+                )
 
-                    lm_hidden = self.base_lm.forward_step(
-                        curr_embed[:, 0, :], torch.tensor([self.base_lm.kv_cache.step()], device=curr_embed.device)
-                    ).clone()
-                    lm_hidden = self.fsq_layer(lm_hidden)
-                    curr_residual_input = self.fusion_concat_proj(torch.cat((lm_hidden, curr_embed[:, 0, :]), dim=-1))
-                    residual_hidden = self.residual_lm.forward_step(
-                        curr_residual_input,
-                        torch.tensor([self.residual_lm.kv_cache.step()], device=curr_embed.device),
-                    ).clone()
+                if i > min_len and stop_flag == 1:
+                    if not stop_detected:
+                        stop_detected = True
+                    if extra_steps_remaining <= 0:
+                        break
+                    extra_steps_remaining -= 1
 
-                if not streaming:
-                    pred_feat_seq = torch.cat(pred_feat_seq, dim=1)
-                    feat_pred = rearrange(pred_feat_seq, "b t p d -> b d (t p)", b=B, p=self.patch_size)
-                    generated_feat = pred_feat_seq[:, context_len:, :, :].squeeze(0).cpu()
-                    yield feat_pred, generated_feat, context_len
+                lm_hidden = self.base_lm.forward_step(
+                    curr_embed[:, 0, :], torch.tensor([self.base_lm.kv_cache.step()], device=curr_embed.device)
+                ).clone()
+                lm_hidden = self.fsq_layer(lm_hidden)
+                curr_residual_input = self.fusion_concat_proj(torch.cat((lm_hidden, curr_embed[:, 0, :]), dim=-1))
+                residual_hidden = self.residual_lm.forward_step(
+                    curr_residual_input,
+                    torch.tensor([self.residual_lm.kv_cache.step()], device=curr_embed.device),
+                ).clone()
 
-            VoxCPM2Model._inference = patched_inference
-            VoxCPM2Model._voxnovel_patched = True
-            logger.info("VoxCPM2Model runtime patched with smooth release and anti-cutoff protection.")
-        except Exception as e:
-            logger.warning(f"Could not patch VoxCPM inference: {e}")
+            if not streaming:
+                pred_feat_seq = torch.cat(pred_feat_seq, dim=1)
+                feat_pred = rearrange(pred_feat_seq, "b t p d -> b d (t p)", b=B, p=self.patch_size)
+                generated_feat = pred_feat_seq[:, context_len:, :, :].squeeze(0).cpu()
+                yield feat_pred, generated_feat, context_len
+
+        VoxCPM2Model._inference = patched_inference
+        VoxCPM2Model._voxnovel_patched = True
+        logger.info("VoxCPM2Model runtime patched with smooth release and anti-cutoff protection.")
+
+    @staticmethod
+    def _installed_voxcpm_version() -> Optional[str]:
+        from importlib import metadata
+
+        try:
+            return metadata.version("voxcpm")
+        except metadata.PackageNotFoundError:
+            return None
 
     def _get_local_model(self):
         """Lazy load VoxCPM model locally."""
@@ -218,8 +274,69 @@ class VoxCPM2TTS(BaseTTS):
                 self._warned_local = True
             return None
 
-    @staticmethod
-    def build_control_prompt(voice_description: Optional[str], emotion: Optional[str] = None) -> str:
+    # English voice descriptors accepted verbatim in a control prompt.
+    _ENGLISH_VOICE_TERMS: frozenset = frozenset({
+        # timbre
+        "deep", "soft", "gentle", "husky", "raspy", "breathy", "smooth", "rich",
+        "warm", "bright", "crisp", "clear", "mellow", "nasal", "thin", "full",
+        "sweet", "melodic", "resonant", "velvety", "gravelly", "airy",
+        # pace and delivery
+        "slow", "fast", "measured", "steady", "brisk", "deliberate", "articulate",
+        "whispering", "hushed", "drawling", "clipped",
+        # affect
+        "calm", "cool", "confident", "authoritative", "commanding", "serious",
+        "solemn", "cheerful", "lively", "playful", "friendly", "kind", "gentle",
+        "mysterious", "enchanting", "charming", "seductive", "melancholic", "sad",
+        "angry", "fierce", "anxious", "fearful", "excited", "suspenseful",
+        "dignified", "elegant", "noble", "humble", "weary", "tired", "energetic",
+        "natural", "expressive", "monotone", "dramatic", "theatrical",
+        # persona and age
+        "young", "elderly", "aged", "teenage", "teenager", "child", "childlike",
+        "adult", "mature", "girl", "boy", "lady", "gentleman", "woman", "man",
+    })
+
+    # Thai keyword -> English voice-design trait, applied in order. A trailing
+    # third element, when present, suppresses the match (more specific term wins).
+    _TRAIT_KEYWORDS: tuple = (
+        (("คุณหนู",), "noble lady"),
+        (("กุลสตรี", "กลุสตรี"), "elegant gentlewoman"),
+        (("คุณชาย", "สุภาพบุรุษ"), "noble gentleman"),
+        (("เด็กสาว", "สาวน้อย"), "young girl"),
+        (("เด็กหนุ่ม", "หนุ่มน้อย"), "young boy"),
+        (("เด็ก", "เด็กน้อย"), "child"),
+        (("คนชรา", "คนแก่", "สูงวัย", "ชรา"), "elderly"),
+        (("วัยรุ่น",), "teenager"),
+        (("เย็น", "เยือกเย็น", "ยะเยือก"), "cool, calm"),
+        (("ลึกลับ",), "mysterious"),
+        (("น่าหลงใหล", "มีเสน่ห์", "ตรึงใจ", "เย้ายวน", "เซ็กซี่"), "enchanting, charming"),
+        (("เสียงทุ้ม", "ทุ้ม"), "deep voice", "ทุ้มลึก"),
+        (("อ่อนโยน",), "gentle"),
+        (("ชัดถ้อยชัดคำ", "ชัดเจน", "ฉะฉาน"), "articulate, clear"),
+        (("หวาน", "เสียงหวาน", "หวานใส"), "sweet melodic"),
+        (("เสียงใส", "กังวาน"), "crisp, clear"),
+        (("สดใส", "ร่าเริง"), "bright, cheerful"),
+        (("มีชีวิตชีวา",), "lively"),
+        (("ขี้เล่น", "ซุกซน"), "playful"),
+        (("สง่างาม", "สุขุม"), "dignified, elegant"),
+        (("อบอุ่น",), "warm"),
+        (("มั่นใจ", "หนักแน่น"), "confident"),
+        (("เข้มขรึม", "เคร่งขรึม"), "serious, solemn"),
+        (("ห้าว", "ดุดัน", "แข็งกร้าว"), "husky, fierce"),
+        (("ทรงพลัง", "มีอำนาจ", "น่าเกรงขาม"), "authoritative, commanding"),
+        (("แฟนตาซี",), "fantasy storytelling"),
+        (("เศร้า", "หม่นหมอง", "โศกเศร้า"), "melancholic, sad"),
+        (("โกรธ", "ฉุนเฉียว", "ดุ"), "angry"),
+        (("ตื่นเต้น", "ลุ้นระทึก"), "suspenseful"),
+        (("ตื่นตระหนก", "กลัว"), "fearful"),
+        (("กระซิบ",), "whispering"),
+        (("น่ารัก",), "cute"),
+        (("ใจดี",), "kind"),
+        (("เป็นมิตร",), "friendly"),
+        (("เป็นธรรมชาติ",), "natural"),
+    )
+
+    @classmethod
+    def build_control_prompt(cls, voice_description: Optional[str], emotion: Optional[str] = None) -> str:
         """
         Translate and normalize natural language voice descriptions (Thai/English) into
         concise, highly effective English control instructions for VoxCPM2 / MiniCPM-based voice design.
@@ -269,6 +386,18 @@ class VoxCPM2TTS(BaseTTS):
             gender = "female"
         elif has_male and not has_female:
             gender = "male"
+        elif has_female and has_male:
+            # A description mentioning both ("a young man talking to a girl") is about
+            # one speaker; take whichever term appears first rather than dropping both.
+            first_female = min(
+                (text_no_narrate.find(k) for k in female_keys if k in text_no_narrate),
+                default=len(text_no_narrate),
+            )
+            first_male = min(
+                (text_no_narrate.find(k) for k in male_keys if k in text_no_narrate),
+                default=len(text_no_narrate),
+            )
+            gender = "female" if first_female <= first_male else "male"
 
         is_narrator = any(k in clean_text for k in ["ผู้บรรยาย", "คนเล่า", "เล่าเรื่อง", "บรรยาย"]) or bool(
             re.search(r"\bnarrat(?:or|ion)\b", clean_text, re.I)
@@ -276,93 +405,25 @@ class VoxCPM2TTS(BaseTTS):
 
         traits: List[str] = []
 
-        # Personas / Archetypes
-        if any(k in clean_text for k in ["คุณหนู"]):
-            traits.append("noble lady")
-        if any(k in clean_text for k in ["กุลสตรี", "กลุสตรี"]):
-            traits.append("elegant gentlewoman")
-        if any(k in clean_text for k in ["คุณชาย", "สุภาพบุรุษ"]):
-            traits.append("noble gentleman")
-        if any(k in clean_text for k in ["เด็กสาว", "สาวน้อย"]):
-            traits.append("young girl")
-        if any(k in clean_text for k in ["เด็กหนุ่ม", "หนุ่มน้อย"]):
-            traits.append("young boy")
-        if any(k in clean_text for k in ["เด็ก", "เด็กน้อย"]):
-            traits.append("child")
-        if any(k in clean_text for k in ["คนชรา", "คนแก่", "สูงวัย", "ชรา"]):
-            traits.append("elderly")
-        if any(k in clean_text for k in ["วัยรุ่น"]):
-            traits.append("teenager")
-
-        # Tone / Timbre / Emotion
-        if any(k in clean_text for k in ["เย็น", "เยือกเย็น", "ยะเยือก"]):
-            traits.append("cool, calm")
-        if any(k in clean_text for k in ["ลึกลับ"]):
-            traits.append("mysterious")
-        if any(k in clean_text for k in ["น่าหลงใหล", "มีเสน่ห์", "ตรึงใจ", "เย้ายวน", "เซ็กซี่"]):
-            traits.append("enchanting, charming")
+        # Timbre terms that need more than a substring test: "หนุ่ม" (young man)
+        # contains "นุ่ม" (soft), and "ทุ้มลึก" must not also match plain "ทุ้ม".
         if "นุ่มลึก" in clean_text or "ทุ้มลึก" in clean_text:
             traits.append("soft and deep")
         elif re.search(r"(?<!ห)นุ่ม", clean_text) or "ละมุน" in clean_text or "นุ่มนวล" in clean_text:
             traits.append("soft, gentle")
-        if any(k in clean_text for k in ["เสียงทุ้ม", "ทุ้ม"]) and "ทุ้มลึก" not in clean_text:
-            traits.append("deep voice")
-        if any(k in clean_text for k in ["อ่อนโยน"]):
-            traits.append("gentle")
-        if any(k in clean_text for k in ["ชัดถ้อยชัดคำ", "ชัดเจน", "ฉะฉาน"]):
-            traits.append("articulate, clear")
-        if any(k in clean_text for k in ["หวาน", "เสียงหวาน", "หวานใส"]):
-            traits.append("sweet melodic")
-        if any(k in clean_text for k in ["เสียงใส", "กังวาน"]):
-            traits.append("crisp, clear")
-        if any(k in clean_text for k in ["สดใส", "ร่าเริง"]):
-            traits.append("bright, cheerful")
-        if any(k in clean_text for k in ["มีชีวิตชีวา"]):
-            traits.append("lively")
-        if any(k in clean_text for k in ["ขี้เล่น", "ซุกซน"]):
-            traits.append("playful")
-        if any(k in clean_text for k in ["สง่างาม", "สุขุม"]):
-            traits.append("dignified, elegant")
-        if any(k in clean_text for k in ["อบอุ่น"]):
-            traits.append("warm")
-        if any(k in clean_text for k in ["มั่นใจ", "หนักแน่น"]):
-            traits.append("confident")
-        if any(k in clean_text for k in ["เข้มขรึม", "เคร่งขรึม"]):
-            traits.append("serious, solemn")
-        if any(k in clean_text for k in ["ห้าว", "ดุดัน", "แข็งกร้าว"]):
-            traits.append("husky, fierce")
-        if any(k in clean_text for k in ["ทรงพลัง", "มีอำนาจ", "น่าเกรงขาม"]):
-            traits.append("authoritative, commanding")
-        if any(k in clean_text for k in ["แฟนตาซี"]):
-            traits.append("fantasy storytelling")
-        if any(k in clean_text for k in ["เศร้า", "หม่นหมอง", "โศกเศร้า"]):
-            traits.append("melancholic, sad")
-        if any(k in clean_text for k in ["โกรธ", "ฉุนเฉียว", "ดุ"]):
-            traits.append("angry")
-        if any(k in clean_text for k in ["ตื่นเต้น", "ลุ้นระทึก"]):
-            traits.append("suspenseful")
-        if any(k in clean_text for k in ["ตื่นตระหนก", "กลัว"]):
-            traits.append("fearful")
-        if any(k in clean_text for k in ["กระซิบ"]):
-            traits.append("whispering")
-        if any(k in clean_text for k in ["น่ารัก"]):
-            traits.append("cute")
-        if any(k in clean_text for k in ["ใจดี"]):
-            traits.append("kind")
-        if any(k in clean_text for k in ["เป็นมิตร"]):
-            traits.append("friendly")
-        if any(k in clean_text for k in ["เป็นธรรมชาติ"]):
-            traits.append("natural")
 
-        # Include explicit English tokens (length >= 3)
-        eng_tokens = re.findall(r"[a-zA-Z]{3,}", clean_text)
-        ignored_eng = {
-            "female", "male", "narrator", "voice", "years", "year",
-            "old", "with", "and", "the", "for", "from", "that", "this"
-        }
-        for w in eng_tokens:
-            lw = w.lower()
-            if lw not in ignored_eng:
+        for keywords, trait, *exclude in cls._TRAIT_KEYWORDS:
+            if exclude and exclude[0] in clean_text:
+                continue
+            if any(k in clean_text for k in keywords):
+                traits.append(trait)
+
+        # Pass through English descriptors, but only ones we recognise as voice
+        # qualities. An open pass-through turns any proper noun in the description
+        # ("...from the ReadToon novel about Bangkok") into a synthesis instruction.
+        for word in re.findall(r"[a-zA-Z]{3,}", clean_text):
+            lw = word.lower()
+            if lw in cls._ENGLISH_VOICE_TERMS:
                 traits.append(lw)
 
         parts = []
@@ -402,20 +463,24 @@ class VoxCPM2TTS(BaseTTS):
         if not t:
             return t
 
+        terminal = (".", "!", "?", "…", "...", "—", ":", ";")
+
         quote_match = re.search(r'([\"\'”’])$', t)
         if quote_match:
             quote_char = quote_match.group(1)
             inner = t[:-1].rstrip()
-            if inner and not inner.endswith((".", "!", "?", "…", "...", "—", ":", ";")):
+            if inner and not inner.endswith(terminal):
                 return f"{inner}.{quote_char} "
             return f"{inner}{quote_char} "
 
-        if not t.endswith((".", "!", "?", "…", "...", "—", ":", ";")):
-            return f"{t}."
+        # The trailing space is part of the cutoff fix, so it must be applied on
+        # every branch -- unpunctuated Thai prose is the common case, not the rare one.
+        if not t.endswith(terminal):
+            return f"{t}. "
         return f"{t} "
 
     @staticmethod
-    def _apply_tail_fadeout(audio: np.ndarray, sample_rate: int = 48000, fade_ms: float = 20.0) -> np.ndarray:
+    def _apply_tail_fadeout(audio: np.ndarray, sample_rate: int, fade_ms: float = 20.0) -> np.ndarray:
         """
         Apply a smooth cosine fade-out on the last fade_ms milliseconds of audio
         to prevent any abrupt cutoff pops or clicks at chunk boundaries.
@@ -430,10 +495,16 @@ class VoxCPM2TTS(BaseTTS):
 
     @staticmethod
     def format_designed_text(text: str, control: Optional[str]) -> str:
+        """Prefix text with its voice-design control prompt.
+
+        Only an exact repeat of this control counts as already-wrapped: prose can
+        legitimately open with a parenthetical ("(เสียงกระซิบ) เขาพูด"), and treating
+        that as a control prompt would drop the real one.
+        """
         control_clean = (control or "").strip()
         if not control_clean:
             return text
-        if text.startswith("(") and ")" in text:
+        if text.startswith(f"({control_clean})"):
             return text
         return f"({control_clean}){text}"
 
@@ -463,7 +534,7 @@ class VoxCPM2TTS(BaseTTS):
             "text": designed_text,
             "voice": control_prompt,
             "control": control_prompt,
-            "cfg_value": 2.5 if not reference_audio else 2.0,
+            "cfg_value": self.CFG_CLONE if reference_audio else self.CFG_VOICE_DESIGN,
             "response_format": "wav",
         }
 
@@ -543,9 +614,7 @@ class VoxCPM2TTS(BaseTTS):
             model = self._get_local_model()
             if model is not None:
                 try:
-                    kwargs: dict[str, Any] = {}
-                    # Calculate sensible min_len to avoid early termination on short pauses
-                    kwargs["min_len"] = max(2, int(len(prepared_text) * 0.08))
+                    kwargs: dict[str, Any] = {"min_len": self._min_len_for(prepared_text)}
 
                     if reference_audio and Path(reference_audio).exists():
                         kwargs["reference_wav_path"] = str(reference_audio)
@@ -557,7 +626,7 @@ class VoxCPM2TTS(BaseTTS):
                     else:
                         # Voice Design / Prompt-to-Voice mode
                         kwargs["text"] = self.format_designed_text(prepared_text, control_prompt)
-                        kwargs["cfg_value"] = 2.5
+                        kwargs["cfg_value"] = self.CFG_VOICE_DESIGN
 
                     audio_array = await asyncio.to_thread(model.generate, **kwargs)
                     if hasattr(model, "tts_model") and hasattr(model.tts_model, "sample_rate"):
@@ -571,11 +640,13 @@ class VoxCPM2TTS(BaseTTS):
             self.used_placeholder = True
             audio_array = self._generate_synthetic_placeholder(prepared_text)
 
-        # Apply smooth tail micro-fadeout to ensure absolutely zero clipping or clicks
+        # Every branch above refreshes self.sample_rate to match what it produced;
+        # read it once here so the fade and the file write cannot disagree.
+        rate = self.sample_rate
         if audio_array is not None and len(audio_array) > 0:
-            audio_array = self._apply_tail_fadeout(audio_array, self.sample_rate)
+            audio_array = self._apply_tail_fadeout(audio_array, rate)
 
-        sf.write(output_file, audio_array, self.sample_rate)
+        sf.write(output_file, audio_array, rate)
         return output_file
 
     @staticmethod

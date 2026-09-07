@@ -57,20 +57,27 @@ class TestVoxCPMControlPrompt(unittest.TestCase):
         )
         self.assertEqual(formatted, "(30-year-old female narrator)สวัสดีครับ")
 
-        # No double wrapping
+        # No double wrapping when the same control is already applied
         formatted_again = VoxCPM2TTS.format_designed_text(
-            "(already wrapped)สวัสดีครับ", "30-year-old female narrator"
+            "(30-year-old female narrator)สวัสดีครับ", "30-year-old female narrator"
         )
-        self.assertEqual(formatted_again, "(already wrapped)สวัสดีครับ")
+        self.assertEqual(formatted_again, "(30-year-old female narrator)สวัสดีครับ")
+
+    def test_leading_parenthetical_prose_still_gets_its_control(self):
+        # Prose can open with a parenthetical; that must not be mistaken for a
+        # control prompt, or the line is synthesized with no voice design at all.
+        formatted = VoxCPM2TTS.format_designed_text("(เสียงกระซิบ) เขาพูด", "female voice")
+        self.assertTrue(formatted.startswith("(female voice)"), formatted)
+        self.assertIn("(เสียงกระซิบ) เขาพูด", formatted)
 
         # Empty control
         plain = VoxCPM2TTS.format_designed_text("สวัสดีครับ", None)
         self.assertEqual(plain, "สวัสดีครับ")
 
     def test_prepare_text_for_tts(self):
-        # 1. Plain unpunctuated Thai sentence gets period
+        # 1. Plain unpunctuated Thai sentence gets a period and the trailing space
         res1 = VoxCPM2TTS.prepare_text_for_tts("สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้")
-        self.assertEqual(res1, "สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้.")
+        self.assertEqual(res1, "สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้. ")
 
         # 2. Quoted dialogue without internal punctuation gets period before quote and trailing space
         res2 = VoxCPM2TTS.prepare_text_for_tts('"แล้วไง สิ่งนั้นมันทำอะไรบ้างล่ะ"')
@@ -100,6 +107,79 @@ class TestVoxCPMControlPrompt(unittest.TestCase):
         self.assertAlmostEqual(faded[-1], 0.0, places=5)
         # Beginning should be unaffected
         self.assertEqual(faded[0], 1.0)
+
+
+class TestPrepareTextInvariants(unittest.TestCase):
+    """The trailing space is part of the cutoff fix, so it must hold on every branch."""
+
+    CASES = [
+        "สมุดบันทึกที่หาไม่เจอเมื่อวานอาจจะโผล่มาก็ได้",
+        "จบแล้ว.",
+        "จริงหรือ?",
+        "ไปเลย!",
+        "เขาพูดว่า \u201cไปกันเถอะ\u201d",
+        "รอสักครู่…",
+        "plain english sentence",
+        "  padded  ",
+    ]
+
+    def test_always_ends_with_space(self):
+        for text in self.CASES:
+            out = VoxCPM2TTS.prepare_text_for_tts(text)
+            self.assertTrue(out.endswith(" "), f"{text!r} -> {out!r}")
+
+    def test_always_has_terminal_punctuation_before_the_space(self):
+        for text in self.CASES:
+            out = VoxCPM2TTS.prepare_text_for_tts(text)
+            stripped = out.rstrip()
+            self.assertTrue(
+                stripped.endswith((".", "!", "?", "\u2026", "\u2014", ":", ";", '"', "\u201d", "'", "\u2019")),
+                f"{text!r} -> {out!r}",
+            )
+
+    def test_empty_input_is_left_alone(self):
+        self.assertEqual(VoxCPM2TTS.prepare_text_for_tts(""), "")
+        self.assertEqual(VoxCPM2TTS.prepare_text_for_tts("   "), "")
+
+
+class TestControlPromptRobustness(unittest.TestCase):
+    def test_proper_nouns_do_not_leak_into_the_prompt(self):
+        result = VoxCPM2TTS.build_control_prompt(
+            "เสียงนุ่ม from the ReadToon novel about Bangkok"
+        )
+        for noise in ("readtoon", "novel", "bangkok", "chapter"):
+            self.assertNotIn(noise, result)
+        self.assertIn("soft, gentle", result)
+
+    def test_recognised_english_descriptors_still_pass_through(self):
+        result = VoxCPM2TTS.build_control_prompt("a husky, authoritative male voice")
+        self.assertIn("husky", result)
+        self.assertIn("authoritative", result)
+
+    def test_mixed_gender_description_resolves_to_one(self):
+        result = VoxCPM2TTS.build_control_prompt("ชายหนุ่มคุยกับหญิงสาว")
+        self.assertTrue(
+            result.startswith("male") or result.startswith("female"), result
+        )
+
+    def test_min_len_scales_with_text_and_has_a_floor(self):
+        self.assertEqual(VoxCPM2TTS._min_len_for(""), VoxCPM2TTS.MIN_LEN_FLOOR)
+        self.assertGreater(VoxCPM2TTS._min_len_for("x" * 500), VoxCPM2TTS._min_len_for("x" * 50))
+
+
+class TestVoxCPMPatchGuard(unittest.TestCase):
+    def test_patch_targets_a_pinned_version(self):
+        # The patch is a copy of upstream's _inference; it must not be applied to a
+        # version it was not derived from.
+        self.assertRegex(VoxCPM2TTS.PATCHED_VOXCPM_VERSION, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(VoxCPM2TTS._EXPECTED_INFERENCE_PARAMS[0], "self")
+        self.assertIn("min_len", VoxCPM2TTS._EXPECTED_INFERENCE_PARAMS)
+
+    def test_patch_runs_under_inference_mode(self):
+        import inspect
+
+        src = inspect.getsource(VoxCPM2TTS._patch_voxcpm_inference)
+        self.assertIn("@torch.inference_mode()", src)
 
 
 if __name__ == "__main__":
