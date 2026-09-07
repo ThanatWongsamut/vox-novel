@@ -35,6 +35,7 @@ class DummyTTS(BaseTTS):
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
         emotion: Optional[str] = None,
+        control_prompt: Optional[str] = None,
     ) -> Path:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         sample_rate = 24000

@@ -20,6 +20,7 @@ class BaseTTS(ABC):
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
         emotion: Optional[str] = None,
+        control_prompt: Optional[str] = None,
     ) -> Path:
         """Synthesize text into an audio file."""
         pass

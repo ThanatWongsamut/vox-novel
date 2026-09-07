@@ -85,6 +85,7 @@ class OpenRouterTranslator(BaseTranslator):
         response_format: Optional[dict] = None,
         status_callback: Optional[callable] = None,
         max_retries: int = 4,
+        max_tokens: Optional[int] = None,
     ) -> str:
         headers = self._get_headers()
         payload = {
@@ -92,6 +93,10 @@ class OpenRouterTranslator(BaseTranslator):
             "messages": messages,
             "temperature": temperature,
         }
+        # Without this OpenRouter reserves the model's whole context window, which a
+        # low-balance account cannot afford even for a one-line answer.
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         # Enable OpenRouter native model fallbacks
         models_chain = [self.model_name]
@@ -245,6 +250,20 @@ class OpenRouterTranslator(BaseTranslator):
         res = await self._call_chat_completion(messages)
         cleaned = re.sub(r"^\s*\[\d+\]\s*", "", res.strip()).strip()
         return cleaned
+
+    # A one-off completion is a short answer, not a chapter.
+    COMPLETION_MAX_TOKENS = 256
+
+    async def complete(self, system_prompt: str, user_prompt: str) -> str:
+        return (
+            await self._call_chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=self.COMPLETION_MAX_TOKENS,
+            )
+        ).strip()
 
     @staticmethod
     def _is_punctuation_or_pause(text: str) -> bool:

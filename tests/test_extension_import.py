@@ -11,6 +11,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.tts.voxcpm import VoxCPM2TTS
 from vox_novel.web import app as web
 
@@ -197,7 +198,9 @@ class TestSynthesisJob(ExtensionApiTestCase):
 
         # Patch before the request: the job starts synthesizing immediately, and
         # real weights would otherwise run full inference here.
+        # No weights, no remote TTS, and no LLM: the suite must not touch the network.
         with mock.patch.object(VoxCPM2TTS, "_get_local_model", return_value=None), \
+             mock.patch.object(NovelPipeline, "voice_prompt_translator", staticmethod(lambda: None)), \
              mock.patch.dict(os.environ, {"VOXCPM_API_URL": ""}, clear=False):
             res = self.client.post(
                 "/api/synthesize-chapter",

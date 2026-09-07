@@ -171,8 +171,29 @@ class NovelPipeline:
             reference_audio=ref_audio,
             knowledge=knowledge,
             progress_callback=progress_callback,
+            translator=self.voice_prompt_translator(),
         )
 
+        # synthesize_chapter caches the control prompts it derived; keep them.
+        self.knowledge.save(knowledge)
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path
+
+    @staticmethod
+    def voice_prompt_translator():
+        """The translator used to turn voice descriptions into English control prompts.
+
+        Returns None when no LLM is configured, which leaves voice design on the
+        offline keyword table.
+        """
+        import os
+
+        if not os.getenv("OPENROUTER_API_KEY"):
+            return None
+        try:
+            return translator_registry.get_translator(
+                "openrouter", model=os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+            )
+        except Exception:
+            return None

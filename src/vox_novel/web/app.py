@@ -960,8 +960,24 @@ async def update_voice_prompt(request: Request):
             raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
         knowledge.update_character_voice(char.name_en, voice_description=voice_description)
 
+    # Derive the English control prompt now, while the user is waiting on a single
+    # save, rather than during synthesis where it would delay the whole chapter.
+    from vox_novel.tts.voxcpm import VoxCPM2TTS
+
+    control = await VoxCPM2TTS.derive_control_prompt(
+        voice_description, translator=pipeline.voice_prompt_translator()
+    )
+    if voice_type == "narrator":
+        knowledge.update_narrator_voice(voice_control_prompt=control)
+    else:
+        knowledge.update_character_voice(char.name_en, voice_control_prompt=control)
+
     knowledge_mgr.save(knowledge)
-    return {"status": "ok", "message": "Voice prompt updated successfully"}
+    return {
+        "status": "ok",
+        "message": "Voice prompt updated successfully",
+        "control_prompt": control,
+    }
 
 
 @web_app.post("/api/voices/generate")
@@ -994,21 +1010,27 @@ async def generate_voice_sample(request: Request):
         )
         text = sample_text or "ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย"
         out_file = voices_dir / "narrator_ref.wav"
+        control = await tts.derive_control_prompt(
+            effective_desc, translator=pipeline.voice_prompt_translator()
+        )
         await tts.synthesize(
             text=text,
             output_file=out_file,
             voice_description=effective_desc,
             reference_audio=None,
+            control_prompt=control,
         )
         knowledge.update_narrator_voice(
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
         )
+        knowledge.update_narrator_voice(voice_control_prompt=control)
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
             "audio_url": f"/api/voices/{series_id}/narrator",
             "voice_description": effective_desc,
+            "control_prompt": control,
         }
     else:
         if not character_name:
@@ -1026,22 +1048,28 @@ async def generate_voice_sample(request: Request):
         effective_desc = voice_description or char.voice_description or default_char_desc
         text = sample_text or f"สวัสดี ข้าชื่อ{char.name_target} ยินดีที่ได้รู้จัก"
         out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
+        control = await tts.derive_control_prompt(
+            effective_desc, translator=pipeline.voice_prompt_translator()
+        )
         await tts.synthesize(
             text=text,
             output_file=out_file,
             voice_description=effective_desc,
             reference_audio=None,
+            control_prompt=control,
         )
         knowledge.update_character_voice(
             char.name_en,
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
         )
+        knowledge.update_character_voice(char.name_en, voice_control_prompt=control)
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
             "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}",
             "voice_description": effective_desc,
+            "control_prompt": control,
         }
 
 

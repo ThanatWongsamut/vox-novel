@@ -451,6 +451,109 @@ class VoxCPM2TTS(BaseTTS):
             return f"{core}, " + ", ".join(unique_traits)
         return core
 
+    # VoxCPM2 only acts on English control prompts -- see the A/B in the test suite.
+    # Anything else is read aloud, so an LLM result is only usable if it is ASCII.
+    MAX_CONTROL_PROMPT_CHARS = 200
+    # Voice design must not stall a chapter because the LLM is slow or down;
+    # the keyword table is always available as a fallback.
+    VOICE_PROMPT_TIMEOUT_SECONDS = 20
+
+    VOICE_PROMPT_SYSTEM = (
+        "You turn a character voice description into a control prompt for a "
+        "text-to-speech voice designer.\n"
+        "Reply with ONE short English phrase, comma-separated attributes only.\n"
+        "Cover whichever of these the description mentions: age, gender, timbre, "
+        "pace, accent, emotion.\n"
+        "Use plain ASCII English. Do not translate or repeat the sample text, do not "
+        "add commentary, quotes, or parentheses, and never exceed 20 words.\n"
+        "Example input: เสียงบรรยายผู้หญิง อายุ 30 ปี เย็น ลึกลับ นุ่มลึก\n"
+        "Example output: 30-year-old female narrator, cool, mysterious, soft and deep"
+    )
+
+    @classmethod
+    def _sanitize_control_prompt(cls, candidate: str) -> Optional[str]:
+        """Return a usable control prompt, or None if the model gave us something unsafe.
+
+        A control prompt that is not plain ASCII gets spoken aloud instead of acted
+        on, so anything questionable is rejected in favour of the keyword table.
+        """
+        text = (candidate or "").strip()
+        # Models like to wrap the answer; unwrap before validating.
+        text = text.strip("`").strip()
+        if text.startswith("(") and text.endswith(")"):
+            text = text[1:-1].strip()
+        text = text.strip('"').strip("'").strip()
+        text = " ".join(text.split())
+
+        if not text or not text.isascii():
+            return None
+        if len(text) > cls.MAX_CONTROL_PROMPT_CHARS:
+            return None
+        if "\n" in text or ")" in text or "(" in text:
+            return None
+        # A refusal or an explanation rather than a descriptor list.
+        if re.search(r"\b(sorry|cannot|as an ai|i can't|unable)\b", text, re.I):
+            return None
+        return text
+
+    @classmethod
+    async def _resolve_cached_control(
+        cls,
+        description: Optional[str],
+        cached: Optional[str],
+        translator: Optional[Any] = None,
+    ) -> str:
+        """Reuse a stored control prompt, deriving one only on a cache miss."""
+        if cached:
+            return cached
+        return await cls.derive_control_prompt(description, translator=translator)
+
+    @classmethod
+    async def derive_control_prompt(
+        cls,
+        voice_description: Optional[str],
+        emotion: Optional[str] = None,
+        translator: Optional[Any] = None,
+    ) -> str:
+        """Build an English control prompt, preferring the LLM over the keyword table.
+
+        The table can only express traits someone hand-coded, so a description like
+        "เสียงแหบเล็กน้อยแบบคนเพิ่งตื่นนอน" contributes nothing to it. An LLM handles
+        arbitrary wording. The table remains the fallback so voice design keeps
+        working with no API key, and so a bad completion cannot make things worse.
+        """
+        fallback = cls.build_control_prompt(voice_description, emotion=emotion)
+
+        raw = f"{voice_description or ''} {emotion or ''}".strip()
+        if not raw or translator is None:
+            return fallback
+
+        try:
+            answer = await asyncio.wait_for(
+                translator.complete(cls.VOICE_PROMPT_SYSTEM, raw),
+                timeout=cls.VOICE_PROMPT_TIMEOUT_SECONDS,
+            )
+        except NotImplementedError:
+            return fallback
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Voice description translation timed out after "
+                f"{cls.VOICE_PROMPT_TIMEOUT_SECONDS}s; using keyword table."
+            )
+            return fallback
+        except Exception as e:
+            logger.warning(f"Voice description translation failed, using keyword table: {e}")
+            return fallback
+
+        cleaned = cls._sanitize_control_prompt(answer)
+        if not cleaned:
+            logger.warning(
+                "Voice description translation returned an unusable control prompt "
+                f"({answer!r}); using keyword table."
+            )
+            return fallback
+        return cleaned
+
     @staticmethod
     def prepare_text_for_tts(text: str) -> str:
         """
@@ -514,6 +617,7 @@ class VoxCPM2TTS(BaseTTS):
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
         emotion: Optional[str] = None,
+        control_prompt: Optional[str] = None,
     ) -> Optional[np.ndarray]:
         """Call remote VoxCPM / vLLM-Omni HTTP API."""
         if not self.api_url:
@@ -525,7 +629,8 @@ class VoxCPM2TTS(BaseTTS):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
+        if control_prompt is None:
+            control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
         designed_text = self.format_designed_text(text, control_prompt)
 
         payload: dict[str, Any] = {
@@ -589,13 +694,19 @@ class VoxCPM2TTS(BaseTTS):
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
         emotion: Optional[str] = None,
+        control_prompt: Optional[str] = None,
     ) -> Path:
-        """Synthesize a single text into audio."""
+        """Synthesize a single text into audio.
+
+        control_prompt, when given, is used as-is; callers synthesizing many
+        paragraphs derive it once rather than paying for it per paragraph.
+        """
         output_file.parent.mkdir(parents=True, exist_ok=True)
         audio_array = None
 
         prepared_text = self.prepare_text_for_tts(text)
-        control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
+        if control_prompt is None:
+            control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
 
         # 1. Try remote API first if configured
         if self.api_url:
@@ -605,6 +716,7 @@ class VoxCPM2TTS(BaseTTS):
                     voice_description=voice_description,
                     reference_audio=reference_audio,
                     emotion=emotion,
+                    control_prompt=control_prompt,
                 )
             except Exception as e:
                 logger.warning(f"Remote VoxCPM API error: {e}")
@@ -667,11 +779,15 @@ class VoxCPM2TTS(BaseTTS):
         reference_audio: Optional[Path] = None,
         knowledge: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
+        translator: Optional[Any] = None,
     ) -> Path:
         """
         Synthesize entire chapter into a single master audio file.
         Stitches paragraph audio chunks with natural pauses.
         Uses character reference voice anchors when available, falling back to narrator.
+
+        Control prompts are resolved once per speaker before the loop, so a chapter
+        costs at most one LLM call per distinct voice rather than one per paragraph.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         final_file = output_dir / f"chapter_{chapter.id}.wav"
@@ -691,6 +807,16 @@ class VoxCPM2TTS(BaseTTS):
         if not narrator_desc and knowledge and getattr(knowledge, "narrator_voice_description", None):
             narrator_desc = knowledge.narrator_voice_description
         default_desc = narrator_desc or "เสียงบรรยายผู้ชาย นุ่มลึก ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
+
+        # One control prompt per distinct voice, resolved up front and reused.
+        narrator_control = await self._resolve_cached_control(
+            description=default_desc,
+            cached=getattr(knowledge, "narrator_voice_control_prompt", None),
+            translator=translator,
+        )
+        if knowledge is not None and hasattr(knowledge, "narrator_voice_control_prompt"):
+            knowledge.narrator_voice_control_prompt = narrator_control
+        control_by_speaker: dict = {}
 
         # Ensure a persistent narrator reference voice exists so all narration paragraphs sound identical
         effective_narrator_ref = reference_audio
@@ -725,6 +851,7 @@ class VoxCPM2TTS(BaseTTS):
 
             # Determine voice & emotion for this paragraph (character-specific voice or narrator)
             para_voice_desc = default_desc
+            para_control = narrator_control
             para_ref_audio = effective_narrator_ref
             para_emotion = p.emotion
 
@@ -749,15 +876,33 @@ class VoxCPM2TTS(BaseTTS):
 
                     if char.voice_description:
                         para_voice_desc = char.voice_description
+                        key = char.name_en
+                        if key not in control_by_speaker:
+                            resolved = await self._resolve_cached_control(
+                                description=char.voice_description,
+                                cached=getattr(char, "voice_control_prompt", None),
+                                translator=translator,
+                            )
+                            char.voice_control_prompt = resolved
+                            control_by_speaker[key] = resolved
+                        para_control = control_by_speaker[key]
 
             # Key chunks by Paragraph.index so /api/audio/.../para/{index} resolves them.
             chunk_file = output_dir / f"para_{chapter.id}_{p.index}.wav"
+            # An emotion is per-paragraph, so it cannot come from the cached control.
+            effective_control = para_control
+            if para_emotion:
+                emotion_bit = self.build_control_prompt(None, emotion=para_emotion)
+                if emotion_bit and emotion_bit != "voice":
+                    effective_control = f"{para_control}, {emotion_bit.replace('voice, ', '')}"
+
             await self.synthesize(
                 text=text_to_speak,
                 output_file=chunk_file,
                 voice_description=para_voice_desc,
                 reference_audio=para_ref_audio,
                 emotion=para_emotion,
+                control_prompt=effective_control,
             )
 
             # Read back array to concatenate
