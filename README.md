@@ -11,7 +11,7 @@ A modular, extensible pipeline to **scrape**, **translate** (with self-improving
    - Browse tracked series and chapter translation status (`✅ Translated` vs `⏳ Pending`).
    - Select and translate individual chapters interactively.
    - One-click **"Translate next untranslated chapter"** to read through series sequentially.
-3. **OpenRouter Support**: Free models supported out-of-the-box (`minimax/minimax-m3:free`, `z-ai/glm-5.2:free`, etc.).
+3. **OpenRouter Support**: Works out of the box on a free model (`google/gemma-4-31b-it:free`). Free tiers are capped at 50 requests/day and cannot translate a whole novel — see [docs/model-selection.md](docs/model-selection.md) for measured costs and model choices.
 4. **Self-Improving Series Glossary**: Auto-detects and records newly introduced characters, skills, item names, and locations into `output/<series_id>/knowledge_th.json`.
 5. **Clean Dual Storage**:
    - `output/<series_id>/chapters/chapter_<id>.json` (Full metadata + 1:1 paragraph indices for future TTS)
@@ -47,7 +47,7 @@ uv run vox-novel info "https://www.webnovel.com/book/illusion-hunter-from-anothe
 export OPENROUTER_API_KEY="sk-or-v1-..."
 uv run vox-novel chapter "https://www.webnovel.com/book/illusion-hunter-from-another-world_36119734008764305/chapter-100.-unavoidable-malice_97077461090620248"
 ```
-*(Default target language is **Thai (`th`)** and default translator is **OpenRouter** with `minimax/minimax-m3:free`).*
+*(Default target language is **Thai (`th`)** and default translator is **OpenRouter** with `google/gemma-4-31b-it:free`).*
 
 ### 5. View Series Glossary / Lore Memory
 ```bash
