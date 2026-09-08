@@ -35,6 +35,11 @@ class BaseTTS(ABC):
         reference_audio: Optional[Path] = None,
         knowledge: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
+        translator: Optional[Any] = None,
     ) -> Path:
-        """Synthesize an entire chapter into audio file(s)."""
+        """Synthesize an entire chapter into audio file(s).
+
+        translator, when given, is used to derive English voice-control prompts
+        from free-form descriptions. Engines that do not need one ignore it.
+        """
         pass

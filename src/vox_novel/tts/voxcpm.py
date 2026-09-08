@@ -489,7 +489,9 @@ class VoxCPM2TTS(BaseTTS):
             return None
         if len(text) > cls.MAX_CONTROL_PROMPT_CHARS:
             return None
-        if "\n" in text or ")" in text or "(" in text:
+        # Newlines are already collapsed by the split/join above; parentheses would
+        # nest inside the control wrapper format_designed_text applies.
+        if ")" in text or "(" in text:
             return None
         # A refusal or an explanation rather than a descriptor list.
         if re.search(r"\b(sorry|cannot|as an ai|i can't|unable)\b", text, re.I):
@@ -899,7 +901,10 @@ class VoxCPM2TTS(BaseTTS):
             if para_emotion:
                 emotion_bit = self.build_control_prompt(None, emotion=para_emotion)
                 if emotion_bit and emotion_bit != "voice":
-                    effective_control = f"{para_control}, {emotion_bit.replace('voice, ', '')}"
+                    combined = f"{para_control}, {emotion_bit.replace('voice, ', '')}"
+                    # Keep the same ceiling the derived prompt was validated against.
+                    if len(combined) <= self.MAX_CONTROL_PROMPT_CHARS:
+                        effective_control = combined
 
             await self.synthesize(
                 text=text_to_speak,

@@ -142,6 +142,53 @@ class TestChapterAudioOutput(TTSTestCase):
         self.assertEqual(seen[-1], 100)
 
 
+class TestEngineInterfaceParity(TTSTestCase):
+    """Every engine must accept what the pipeline actually passes.
+
+    The pipeline calls synthesize_chapter with translator=..., so an engine that
+    omits the parameter raises TypeError at runtime while the rest of the suite
+    still passes.
+    """
+
+    PIPELINE_KWARGS = dict(
+        use_translated=True,
+        voice_description=None,
+        reference_audio=None,
+        knowledge=None,
+        progress_callback=None,
+        translator=None,
+    )
+
+    def test_every_registered_engine_accepts_the_pipeline_call(self):
+        for name in ("dummy", "voxcpm2"):
+            engine = tts_registry.get_tts(name)
+            if name == "voxcpm2":
+                engine.api_url = None
+                patcher = mock.patch.object(engine, "_get_local_model", return_value=None)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            out = self.tmp / name
+            try:
+                asyncio.run(
+                    engine.synthesize_chapter(
+                        chapter=make_chapter(), output_dir=out, **self.PIPELINE_KWARGS
+                    )
+                )
+            except TypeError as e:
+                self.fail(f"{name} rejects the pipeline's call: {e}")
+
+    def test_base_class_declares_the_same_parameters(self):
+        import inspect
+
+        from vox_novel.tts.base import BaseTTS
+
+        base = set(inspect.signature(BaseTTS.synthesize_chapter).parameters)
+        for name in ("dummy", "voxcpm2"):
+            impl = set(inspect.signature(type(tts_registry.get_tts(name)).synthesize_chapter).parameters)
+            missing = base - impl
+            self.assertFalse(missing, f"{name} is missing {missing} from the BaseTTS contract")
+
+
 class TestRegistry(TTSTestCase):
     def test_engines_accept_shared_cli_options(self):
         # The CLI forwards --api-url/--device to whichever engine is selected;
