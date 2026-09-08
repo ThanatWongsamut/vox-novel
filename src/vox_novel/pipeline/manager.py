@@ -116,7 +116,13 @@ class NovelPipeline:
 
                 # Agentic Critic/Editor Step: Polishes draft for natural Thai flow & strict glossary alignment
                 if agentic_mode:
-                    chapter.paragraphs = await translator.polish_paragraphs_agent(
+                    # The editor pass sees both the draft and the English original, so
+                    # it can repair meaning as well as phrasing -- it is where a
+                    # stronger model earns its cost. It also batches 25 paragraphs to
+                    # the draft's 15, so running the better model only here is cheaper
+                    # than running it only on the draft.
+                    polish_translator = self._polish_translator(translator, translator_name, kwargs)
+                    chapter.paragraphs = await polish_translator.polish_paragraphs_agent(
                         chapter.paragraphs,
                         target_lang=target_lang,
                         knowledge=series_knowledge,
@@ -179,6 +185,26 @@ class NovelPipeline:
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path
+
+    @staticmethod
+    def _polish_translator(draft_translator, translator_name: str, kwargs: dict):
+        """Return the translator to use for the editor pass.
+
+        OPENROUTER_POLISH_MODEL lets the editor pass run on a different (usually
+        stronger) model than the draft. Unset, the draft translator is reused, so
+        behaviour is unchanged.
+        """
+        import os
+
+        polish_model = os.getenv("OPENROUTER_POLISH_MODEL", "").strip()
+        if not polish_model or polish_model == getattr(draft_translator, "model_name", None):
+            return draft_translator
+        try:
+            return translator_registry.get_translator(
+                translator_name, **{**kwargs, "model": polish_model}
+            )
+        except Exception:
+            return draft_translator
 
     @staticmethod
     def voice_prompt_translator():
