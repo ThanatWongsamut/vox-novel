@@ -37,8 +37,9 @@ class VoxCPM2TTS(BaseTTS):
         self.sample_rate = sample_rate
         self._local_model = None
         self._warned_local = False
-        self._ref_cache_key: Optional[tuple] = None
-        self._ref_cache_value: Optional[str] = None
+        # Keyed by (path, mtime, size). A dialogue chapter alternates between the
+        # narrator and several characters, so a single slot would thrash.
+        self._ref_cache: dict = {}
         # Set when output came from the placeholder tone rather than a real model.
         self.used_placeholder = False
 
@@ -207,12 +208,15 @@ class VoxCPM2TTS(BaseTTS):
                     self.stop_head(self.stop_actn(self.stop_proj(lm_hidden))).argmax(dim=-1)[0].cpu().item()
                 )
 
-                if i > min_len and stop_flag == 1:
-                    if not stop_detected:
-                        stop_detected = True
+                # Once the stop head fires, commit to finishing: count the extra
+                # release steps down regardless of whether stop_flag jitters back to
+                # 0 on a later step, which would otherwise let generation run on.
+                if stop_detected:
+                    extra_steps_remaining -= 1
                     if extra_steps_remaining <= 0:
                         break
-                    extra_steps_remaining -= 1
+                elif i > min_len and stop_flag == 1:
+                    stop_detected = True
 
                 lm_hidden = self.base_lm.forward_step(
                     curr_embed[:, 0, :], torch.tensor([self.base_lm.kv_cache.step()], device=curr_embed.device)
@@ -477,12 +481,17 @@ class VoxCPM2TTS(BaseTTS):
         A control prompt that is not plain ASCII gets spoken aloud instead of acted
         on, so anything questionable is rejected in favour of the keyword table.
         """
-        text = (candidate or "").strip()
-        # Models like to wrap the answer; unwrap before validating.
-        text = text.strip("`").strip()
-        if text.startswith("(") and text.endswith(")"):
-            text = text[1:-1].strip()
-        text = text.strip('"').strip("'").strip()
+        # Models wrap the answer in quotes, backticks and parentheses in any
+        # combination, so peel repeatedly rather than assuming one order.
+        WRAPPERS = "`\"' \t\r\n"
+        text = (candidate or "").strip(WRAPPERS)
+        for _ in range(4):
+            before = text
+            if text.startswith("(") and text.endswith(")"):
+                text = text[1:-1]
+            text = text.strip(WRAPPERS)
+            if text == before:
+                break
         text = " ".join(text.split())
 
         if not text or not text.isascii():
@@ -600,6 +609,10 @@ class VoxCPM2TTS(BaseTTS):
             return audio
         fade_curve = (np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(audio.dtype)
         out = audio.copy()
+        if out.ndim > 1:
+            # A remote server may return multi-channel audio; broadcast the curve
+            # down the channel axis rather than failing to align shapes.
+            fade_curve = fade_curve[:, np.newaxis]
         out[-fade_len:] *= fade_curve
         return out
 
@@ -638,7 +651,18 @@ class VoxCPM2TTS(BaseTTS):
 
         if control_prompt is None:
             control_prompt = self.build_control_prompt(voice_description, emotion=emotion)
-        designed_text = self.format_designed_text(text, control_prompt)
+
+        # Match the local path: a reference clip already fixes the voice identity, so
+        # only an emotion is worth prefixing. Sending a full voice design alongside a
+        # reference gives the model two conflicting instructions.
+        if reference_audio and Path(reference_audio).exists():
+            if emotion:
+                emotion_ctrl = self.build_control_prompt(None, emotion=emotion)
+                designed_text = self.format_designed_text(text, emotion_ctrl)
+            else:
+                designed_text = text
+        else:
+            designed_text = self.format_designed_text(text, control_prompt)
 
         payload: dict[str, Any] = {
             "model": self.model_name,
@@ -664,6 +688,10 @@ class VoxCPM2TTS(BaseTTS):
                         # Honour the server's rate, otherwise the stitched file plays
                         # back at the wrong speed.
                         self.sample_rate = int(sr)
+                        if audio_data.ndim > 1:
+                            # The chapter is stitched as mono; downmix here so every
+                            # stage downstream sees a consistent shape.
+                            audio_data = audio_data.mean(axis=1)
                         return audio_data.astype(np.float32)
                 except Exception as e:
                     logger.debug(f"Endpoint {ep} failed: {e}")
@@ -675,10 +703,9 @@ class VoxCPM2TTS(BaseTTS):
         """Base64-encode a reference clip once, keyed by path and mtime."""
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
-        if self._ref_cache_key != key:
-            self._ref_cache_key = key
-            self._ref_cache_value = base64.b64encode(path.read_bytes()).decode("utf-8")
-        return self._ref_cache_value
+        if key not in self._ref_cache:
+            self._ref_cache[key] = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return self._ref_cache[key]
 
     def _generate_synthetic_placeholder(self, text: str) -> np.ndarray:
         """

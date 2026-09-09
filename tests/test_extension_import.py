@@ -227,6 +227,29 @@ class TestSynthesisJob(ExtensionApiTestCase):
         self.assertEqual(res.status_code, 400)
 
 
+class TestVoicePromptValidation(ExtensionApiTestCase):
+    def test_invalid_voice_type_is_a_client_error(self):
+        # Previously fell through to an UnboundLocalError on `char` -> HTTP 500.
+        res = self.client.post(
+            "/api/voices/update-prompt",
+            json={"series_id": "series-a", "voice_type": "bogus", "voice_description": "x"},
+        )
+        self.assertEqual(res.status_code, 400, res.text)
+
+    def test_missing_voice_type_is_a_client_error(self):
+        res = self.client.post(
+            "/api/voices/update-prompt", json={"series_id": "series-a"}
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_character_without_a_name_is_a_client_error(self):
+        res = self.client.post(
+            "/api/voices/update-prompt",
+            json={"series_id": "series-a", "voice_type": "character"},
+        )
+        self.assertEqual(res.status_code, 400)
+
+
 class TestCorsPolicy(ExtensionApiTestCase):
     def test_arbitrary_origin_is_not_allowed(self):
         res = self.client.get(

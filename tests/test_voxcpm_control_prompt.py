@@ -210,6 +210,53 @@ class TestControlPromptIsAsciiOnly(unittest.TestCase):
         self.assertIn("สวัสดีค่ะ", designed)
 
 
+class TestMultiChannelAudio(unittest.TestCase):
+    """A remote TTS server may return stereo; the fade must not fail to broadcast."""
+
+    def test_fadeout_handles_stereo(self):
+        import numpy as np
+
+        stereo = np.ones((48000, 2), dtype=np.float32)
+        out = VoxCPM2TTS._apply_tail_fadeout(stereo, 48000)
+        self.assertEqual(out.shape, stereo.shape)
+        self.assertLess(float(out[-1].max()), 0.01, "tail should be faded")
+        self.assertAlmostEqual(float(out[0].max()), 1.0, places=5, msg="head untouched")
+
+    def test_fadeout_still_handles_mono(self):
+        import numpy as np
+
+        mono = np.ones(48000, dtype=np.float32)
+        out = VoxCPM2TTS._apply_tail_fadeout(mono, 48000)
+        self.assertEqual(out.shape, mono.shape)
+        self.assertLess(float(out[-1]), 0.01)
+
+    def test_shorter_than_fade_is_returned_unchanged(self):
+        import numpy as np
+
+        tiny = np.ones(10, dtype=np.float32)
+        self.assertIs(VoxCPM2TTS._apply_tail_fadeout(tiny, 48000), tiny)
+
+
+class TestWrapperStripping(unittest.TestCase):
+    """Models wrap answers in quotes, backticks and parentheses in any order."""
+
+    def test_quoted_parenthetical_is_unwrapped_not_rejected(self):
+        for raw in [
+            '"(warm female voice)"',
+            "'(warm female voice)'",
+            "`(warm female voice)`",
+            "(warm female voice)",
+            '"warm female voice"',
+            '  ("warm female voice")  ',
+        ]:
+            self.assertEqual(
+                VoxCPM2TTS._sanitize_control_prompt(raw), "warm female voice", raw
+            )
+
+    def test_unbalanced_parenthesis_is_still_rejected(self):
+        self.assertIsNone(VoxCPM2TTS._sanitize_control_prompt("female voice (young)"))
+
+
 class TestVoxCPMPatchGuard(unittest.TestCase):
     def test_patch_targets_a_pinned_version(self):
         # The patch is a copy of upstream's _inference; it must not be applied to a

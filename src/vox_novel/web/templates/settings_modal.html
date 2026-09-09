@@ -59,6 +59,15 @@
                 </div>
             </div>
 
+            <!-- Editor / polish model (optional) -->
+            <div class="space-y-1.5 pt-1">
+                <label class="font-medium text-slate-300 flex items-center gap-1.5">
+                    <i class="fa-solid fa-wand-sparkles text-amber-400"></i> Editor Model <span class="text-slate-500 font-normal">(Optional)</span>
+                </label>
+                <input type="text" id="setting-polish-model" placeholder="leave empty to reuse the model above" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-xs">
+                <p class="text-[10px] text-slate-500 mt-1">Runs the polish pass on a different model. A stronger model costs less here than on the draft &mdash; polish batches 25 paragraphs to the draft&rsquo;s 15.</p>
+            </div>
+
             <!-- Gemini API Key (Optional) -->
             <div class="space-y-1.5 pt-1">
                 <div class="flex items-center justify-between">
@@ -164,6 +173,9 @@
                         break;
                     }
                 }
+                const polishInput = document.getElementById('setting-polish-model');
+                if (polishInput) polishInput.value = data.openrouter_polish_model || '';
+
                 if (!matched && data.openrouter_model) {
                     modelSelect.value = 'custom';
                     customWrapper.classList.remove('hidden');
@@ -263,6 +275,7 @@
                 body: JSON.stringify({
                     openrouter_api_key: keyInput.value.trim(),
                     openrouter_model: chosenModel,
+                    openrouter_polish_model: (document.getElementById('setting-polish-model')?.value || '').trim(),
                     gemini_api_key: geminiInput.value.trim(),
                     voxcpm_api_url: voxcpmUrlInput ? voxcpmUrlInput.value.trim() : "",
                     voxcpm_device: voxcpmDeviceSelect ? voxcpmDeviceSelect.value : "auto",

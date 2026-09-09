@@ -946,6 +946,10 @@ async def update_voice_prompt(request: Request):
 
     if not series_id or not voice_type:
         raise HTTPException(status_code=400, detail="Missing required parameters")
+    if voice_type not in ("narrator", "character"):
+        raise HTTPException(
+            status_code=400, detail="voice_type must be 'narrator' or 'character'"
+        )
 
     series_id = safe_id(series_id, "series_id")
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
@@ -1023,8 +1027,8 @@ async def generate_voice_sample(request: Request):
         knowledge.update_narrator_voice(
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
+            voice_control_prompt=control,
         )
-        knowledge.update_narrator_voice(voice_control_prompt=control)
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
@@ -1062,8 +1066,8 @@ async def generate_voice_sample(request: Request):
             char.name_en,
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
+            voice_control_prompt=control,
         )
-        knowledge.update_character_voice(char.name_en, voice_control_prompt=control)
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",

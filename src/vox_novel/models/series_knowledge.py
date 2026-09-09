@@ -94,7 +94,8 @@ class SeriesKnowledge(BaseModel):
         """Update narrator voice prompt and/or reference audio anchor."""
         if voice_description is not None:
             self.narrator_voice_description = voice_description
-            # The cached English control no longer describes the new text.
+            # The cached English control no longer describes the new text; an
+            # explicit control in this same call overrides that below.
             self.narrator_voice_control_prompt = None
         if voice_ref_audio is not None:
             self.narrator_voice_ref_audio = voice_ref_audio
