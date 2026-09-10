@@ -183,17 +183,35 @@ class NovelPipeline:
         # synthesize_chapter caches the control prompts it derived; persist only
         # those fields. A full save would overwrite any glossary or voice edit made
         # while this multi-minute job was running.
-        fresh = self.knowledge.load_or_init(series_id)
-        if knowledge.narrator_voice_control_prompt:
-            fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
-        for key, char in knowledge.characters.items():
-            target = fresh.find_character(char.name_en)
-            if target is not None and char.voice_control_prompt:
-                target.voice_control_prompt = char.voice_control_prompt
-        self.knowledge.save(fresh)
+        self._persist_derived_control_prompts(series_id, knowledge)
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path
+
+    def _persist_derived_control_prompts(self, series_id: str, knowledge) -> None:
+        """Write back only the control prompts derived during synthesis.
+
+        Synthesis runs for minutes, so the in-memory knowledge object is stale by
+        the time it finishes. Saving it wholesale would discard any glossary or
+        voice edit made meanwhile; and a prompt whose description has since been
+        edited must not be restored either, since that recreates the description /
+        prompt mismatch the invalidation in SeriesKnowledge exists to prevent.
+        """
+        fresh = self.knowledge.load_or_init(series_id)
+        if (
+            knowledge.narrator_voice_control_prompt
+            and fresh.narrator_voice_description == knowledge.narrator_voice_description
+        ):
+            fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
+        for char in knowledge.characters.values():
+            target = fresh.find_character(char.name_en)
+            if (
+                target is not None
+                and char.voice_control_prompt
+                and target.voice_description == char.voice_description
+            ):
+                target.voice_control_prompt = char.voice_control_prompt
+        self.knowledge.save(fresh)
 
     @staticmethod
     def _polish_translator(draft_translator, translator_name: str, kwargs: dict):

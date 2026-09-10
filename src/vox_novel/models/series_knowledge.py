@@ -174,7 +174,7 @@ class SeriesKnowledge(BaseModel):
                 char.role = role
             if notes:
                 char.notes = notes
-            if voice_description and voice_description != char.voice_description:
+            if voice_description and voice_description.strip() != (char.voice_description or "").strip():
                 char.voice_description = voice_description
                 # Same invalidation as update_character_voice -- the glossary edit
                 # modal reaches this path, not that one.

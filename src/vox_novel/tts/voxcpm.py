@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 import httpx
@@ -39,7 +40,7 @@ class VoxCPM2TTS(BaseTTS):
         self._warned_local = False
         # Keyed by (path, mtime, size). A dialogue chapter alternates between the
         # narrator and several characters, so a single slot would thrash.
-        self._ref_cache: dict = {}
+        self._ref_cache: "OrderedDict[tuple, str]" = OrderedDict()
         # Set when output came from the placeholder tone rather than a real model.
         self.used_placeholder = False
 
@@ -461,6 +462,15 @@ class VoxCPM2TTS(BaseTTS):
     # A chapter alternates between the narrator and its speaking characters; this
     # comfortably covers a cast while bounding memory in a long-lived process.
     MAX_REF_CACHE_ENTRIES = 32
+
+    # Traits that describe how a line is delivered, as opposed to who is speaking.
+    # Only these may be appended to a speaker's control prompt for one paragraph.
+    _EMOTION_TRAITS: frozenset = frozenset({
+        "angry", "melancholic", "sad", "fearful", "suspenseful", "whispering",
+        "playful", "bright", "cheerful", "lively", "cool", "calm", "serious",
+        "solemn", "confident", "warm", "kind", "friendly", "mysterious",
+        "enchanting", "charming", "cute", "fierce",
+    })
     # Voice design must not stall a chapter because the LLM is slow or down;
     # the keyword table is always available as a fallback.
     VOICE_PROMPT_TIMEOUT_SECONDS = 20
@@ -589,7 +599,13 @@ class VoxCPM2TTS(BaseTTS):
         if not emotion:
             return ""
         built = cls.build_control_prompt(None, emotion=emotion)
-        return built.split(", ", 1)[1] if ", " in built else ""
+        traits = built.split(", ", 1)[1] if ", " in built else ""
+        # Keep only affect. A description like "เสียงหญิงชราโกรธ" also yields
+        # "elderly", which would append an age to an unrelated speaker and override
+        # the timbre the cloned reference already establishes.
+        return ", ".join(
+            t for t in (x.strip() for x in traits.split(",")) if t in cls._EMOTION_TRAITS
+        )
 
     @staticmethod
     def prepare_text_for_tts(text: str) -> str:
@@ -701,14 +717,15 @@ class VoxCPM2TTS(BaseTTS):
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             endpoints = [f"{url}/v1/audio/speech", f"{url}/synthesize"]
+            failures: List[str] = []
             for ep in endpoints:
                 try:
                     resp = await client.post(ep, json=payload, headers=headers)
                     if resp.status_code != 200:
-                        logger.warning(
-                            f"Remote VoxCPM endpoint {ep} returned HTTP "
-                            f"{resp.status_code}: {resp.text[:200]}"
-                        )
+                        # Only the final all-endpoints-failed case is worth a warning;
+                        # a server implementing just one endpoint would otherwise log
+                        # once per paragraph while working fine.
+                        failures.append(f"{ep} -> HTTP {resp.status_code}: {resp.text[:120]}")
                     if resp.status_code == 200:
                         import io
                         audio_data, sr = sf.read(io.BytesIO(resp.content))
@@ -721,21 +738,30 @@ class VoxCPM2TTS(BaseTTS):
                             audio_data = audio_data.mean(axis=1)
                         return audio_data.astype(np.float32)
                 except Exception as e:
+                    failures.append(f"{ep} -> {e}")
                     logger.debug(f"Endpoint {ep} failed: {e}")
                     continue
 
+            if failures:
+                logger.warning(
+                    "Remote VoxCPM synthesis failed on every endpoint: "
+                    + "; ".join(failures)
+                )
         return None
 
     def _encoded_reference(self, path: Path) -> str:
         """Base64-encode a reference clip once, keyed by path and mtime."""
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
-        if key not in self._ref_cache:
-            # Bounded: a long-lived web process would otherwise retain every clip
-            # it ever encoded, including superseded mtimes of the same path.
-            if len(self._ref_cache) >= self.MAX_REF_CACHE_ENTRIES:
-                self._ref_cache.pop(next(iter(self._ref_cache)))
-            self._ref_cache[key] = base64.b64encode(path.read_bytes()).decode("utf-8")
+        if key in self._ref_cache:
+            # Least-recently-used: FIFO would evict the narrator anchor -- the most
+            # reused clip in a chapter -- on every cycle through a large cast.
+            self._ref_cache.move_to_end(key)
+            return self._ref_cache[key]
+
+        if len(self._ref_cache) >= self.MAX_REF_CACHE_ENTRIES:
+            self._ref_cache.popitem(last=False)
+        self._ref_cache[key] = base64.b64encode(path.read_bytes()).decode("utf-8")
         return self._ref_cache[key]
 
     def _generate_synthetic_placeholder(self, text: str) -> np.ndarray:
@@ -894,7 +920,13 @@ class VoxCPM2TTS(BaseTTS):
             voices_dir = output_dir.parent / "voices"
             voices_dir.mkdir(parents=True, exist_ok=True)
             narrator_sample = voices_dir / "narrator_ref.wav"
-            if not narrator_sample.exists():
+            # Every paragraph clones from this anchor and the local engine ignores a
+            # control prompt once a reference clip is set, so a stale anchor silently
+            # pins the whole series to an old voice. Stamp the control it was built
+            # with and rebuild when that changes.
+            stamp = voices_dir / "narrator_ref.control.txt"
+            previous = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
+            if not narrator_sample.exists() or previous != narrator_control:
                 logger.info("Generating canonical narrator reference voice anchor...")
                 sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
                 await self.synthesize(
@@ -907,6 +939,7 @@ class VoxCPM2TTS(BaseTTS):
                     # clones from this anchor, it would influence nothing at all.
                     control_prompt=narrator_control,
                 )
+                stamp.write_text(narrator_control or "", encoding="utf-8")
             effective_narrator_ref = narrator_sample
 
         for idx, p in enumerate(valid_paras):
