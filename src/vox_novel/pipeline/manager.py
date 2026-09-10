@@ -180,8 +180,17 @@ class NovelPipeline:
             translator=self.voice_prompt_translator(),
         )
 
-        # synthesize_chapter caches the control prompts it derived; keep them.
-        self.knowledge.save(knowledge)
+        # synthesize_chapter caches the control prompts it derived; persist only
+        # those fields. A full save would overwrite any glossary or voice edit made
+        # while this multi-minute job was running.
+        fresh = self.knowledge.load_or_init(series_id)
+        if knowledge.narrator_voice_control_prompt:
+            fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
+        for key, char in knowledge.characters.items():
+            target = fresh.find_character(char.name_en)
+            if target is not None and char.voice_control_prompt:
+                target.voice_control_prompt = char.voice_control_prompt
+        self.knowledge.save(fresh)
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path

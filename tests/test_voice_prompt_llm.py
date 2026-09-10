@@ -148,6 +148,36 @@ class TestKnowledgeCacheInvalidation(unittest.TestCase):
             "a stale control prompt would keep describing the previous voice",
         )
 
+    def test_add_character_also_invalidates_the_cached_control(self):
+        """The glossary edit modal routes through add_character, not update_*_voice.
+
+        Missing this path let a character keep an English control prompt derived
+        from a previous description, so it was synthesized with the old voice.
+        """
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.add_character("Aria", "อาเรีย")
+        k.update_character_voice(
+            "Aria", voice_description="เสียงหวานใส", voice_control_prompt="sweet melodic female voice"
+        )
+        self.assertEqual(k.find_character("Aria").voice_control_prompt, "sweet melodic female voice")
+
+        k.add_character("Aria", "อาเรีย", voice_description="เสียงห้าว ดุดัน ผู้ชาย")
+        self.assertIsNone(
+            k.find_character("Aria").voice_control_prompt,
+            "a control derived from the old description must not survive",
+        )
+
+    def test_add_character_without_a_description_keeps_the_control(self):
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.add_character("Aria", "อาเรีย")
+        k.update_character_voice("Aria", voice_description="เสียงหวานใส", voice_control_prompt="sweet")
+        k.add_character("Aria", "อาเรีย", gender="female")   # unrelated glossary edit
+        self.assertEqual(k.find_character("Aria").voice_control_prompt, "sweet")
+
     def test_character_cache_is_invalidated_too(self):
         from vox_novel.models.series_knowledge import SeriesKnowledge
 

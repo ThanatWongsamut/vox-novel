@@ -157,6 +157,9 @@ class SeriesKnowledge(BaseModel):
                 existing.notes = notes
             if voice_description and not existing.voice_description:
                 existing.voice_description = voice_description
+                # A control prompt derived from an older description no longer
+                # describes this voice; drop it so it is re-derived.
+                existing.voice_control_prompt = None
             if voice_ref_audio and not existing.voice_ref_audio:
                 existing.voice_ref_audio = voice_ref_audio
             self.last_updated = datetime.utcnow()
@@ -171,8 +174,11 @@ class SeriesKnowledge(BaseModel):
                 char.role = role
             if notes:
                 char.notes = notes
-            if voice_description:
+            if voice_description and voice_description != char.voice_description:
                 char.voice_description = voice_description
+                # Same invalidation as update_character_voice -- the glossary edit
+                # modal reaches this path, not that one.
+                char.voice_control_prompt = None
             if voice_ref_audio:
                 char.voice_ref_audio = voice_ref_audio
             for a in alias_list:

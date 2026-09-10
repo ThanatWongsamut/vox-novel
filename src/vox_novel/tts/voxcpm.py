@@ -458,6 +458,9 @@ class VoxCPM2TTS(BaseTTS):
     # VoxCPM2 only acts on English control prompts -- see the A/B in the test suite.
     # Anything else is read aloud, so an LLM result is only usable if it is ASCII.
     MAX_CONTROL_PROMPT_CHARS = 200
+    # A chapter alternates between the narrator and its speaking characters; this
+    # comfortably covers a cast while bounding memory in a long-lived process.
+    MAX_REF_CACHE_ENTRIES = 32
     # Voice design must not stall a chapter because the LLM is slow or down;
     # the keyword table is always available as a fallback.
     VOICE_PROMPT_TIMEOUT_SECONDS = 20
@@ -495,6 +498,10 @@ class VoxCPM2TTS(BaseTTS):
         text = " ".join(text.split())
 
         if not text or not text.isascii():
+            return None
+        # isascii() admits control characters, and str.split() only strips the
+        # whitespace ones.
+        if any(ch < " " or ch == "\x7f" for ch in text):
             return None
         if len(text) > cls.MAX_CONTROL_PROMPT_CHARS:
             return None
@@ -569,6 +576,20 @@ class VoxCPM2TTS(BaseTTS):
             )
             return fallback
         return cleaned
+
+    @classmethod
+    def _emotion_traits(cls, emotion: Optional[str]) -> str:
+        """Return only the trait list for an emotion, without the core descriptor.
+
+        build_control_prompt always returns "<core>, <traits>", where the core is
+        the age/gender/role phrase. Splicing a whole prompt into another one
+        corrupts it -- "female voice, angry" naively stripped of "voice, " becomes
+        "female angry" -- so take everything after the first separator instead.
+        """
+        if not emotion:
+            return ""
+        built = cls.build_control_prompt(None, emotion=emotion)
+        return built.split(", ", 1)[1] if ", " in built else ""
 
     @staticmethod
     def prepare_text_for_tts(text: str) -> str:
@@ -655,7 +676,8 @@ class VoxCPM2TTS(BaseTTS):
         # Match the local path: a reference clip already fixes the voice identity, so
         # only an emotion is worth prefixing. Sending a full voice design alongside a
         # reference gives the model two conflicting instructions.
-        if reference_audio and Path(reference_audio).exists():
+        has_reference = bool(reference_audio) and Path(reference_audio).exists()
+        if has_reference:
             if emotion:
                 emotion_ctrl = self.build_control_prompt(None, emotion=emotion)
                 designed_text = self.format_designed_text(text, emotion_ctrl)
@@ -670,7 +692,7 @@ class VoxCPM2TTS(BaseTTS):
             "text": designed_text,
             "voice": control_prompt,
             "control": control_prompt,
-            "cfg_value": self.CFG_CLONE if reference_audio else self.CFG_VOICE_DESIGN,
+            "cfg_value": self.CFG_CLONE if has_reference else self.CFG_VOICE_DESIGN,
             "response_format": "wav",
         }
 
@@ -682,6 +704,11 @@ class VoxCPM2TTS(BaseTTS):
             for ep in endpoints:
                 try:
                     resp = await client.post(ep, json=payload, headers=headers)
+                    if resp.status_code != 200:
+                        logger.warning(
+                            f"Remote VoxCPM endpoint {ep} returned HTTP "
+                            f"{resp.status_code}: {resp.text[:200]}"
+                        )
                     if resp.status_code == 200:
                         import io
                         audio_data, sr = sf.read(io.BytesIO(resp.content))
@@ -704,6 +731,10 @@ class VoxCPM2TTS(BaseTTS):
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
         if key not in self._ref_cache:
+            # Bounded: a long-lived web process would otherwise retain every clip
+            # it ever encoded, including superseded mtimes of the same path.
+            if len(self._ref_cache) >= self.MAX_REF_CACHE_ENTRIES:
+                self._ref_cache.pop(next(iter(self._ref_cache)))
             self._ref_cache[key] = base64.b64encode(path.read_bytes()).decode("utf-8")
         return self._ref_cache[key]
 
@@ -871,6 +902,10 @@ class VoxCPM2TTS(BaseTTS):
                     output_file=narrator_sample,
                     voice_description=default_desc,
                     reference_audio=None,
+                    # Without this the anchor is built from the keyword table and
+                    # the derived prompt is discarded -- and since every paragraph
+                    # clones from this anchor, it would influence nothing at all.
+                    control_prompt=narrator_control,
                 )
             effective_narrator_ref = narrator_sample
 
@@ -926,9 +961,9 @@ class VoxCPM2TTS(BaseTTS):
             # An emotion is per-paragraph, so it cannot come from the cached control.
             effective_control = para_control
             if para_emotion:
-                emotion_bit = self.build_control_prompt(None, emotion=para_emotion)
-                if emotion_bit and emotion_bit != "voice":
-                    combined = f"{para_control}, {emotion_bit.replace('voice, ', '')}"
+                emotion_traits = self._emotion_traits(para_emotion)
+                if emotion_traits:
+                    combined = f"{para_control}, {emotion_traits}"
                     # Keep the same ceiling the derived prompt was validated against.
                     if len(combined) <= self.MAX_CONTROL_PROMPT_CHARS:
                         effective_control = combined

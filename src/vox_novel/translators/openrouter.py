@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Dict, List, Optional, Tuple
@@ -14,6 +15,8 @@ from vox_novel.translators.prompts import (
     EDITOR_SYSTEM_PROMPT,
     EXTRACTION_SYSTEM_PROMPT,
 )
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -398,6 +401,7 @@ class OpenRouterTranslator(BaseTranslator):
         # Filter out lonely punctuation lines
         to_polish = [p for p in paragraphs if not self._is_punctuation_or_pause(p.text) and p.translated_text]
         total_batches = (len(to_polish) + batch_size - 1) // batch_size if to_polish else 1
+        failed_batches = 0
 
         for batch_idx, i in enumerate(range(0, len(to_polish), batch_size), start=1):
             chunk = to_polish[i : i + batch_size]
@@ -441,15 +445,29 @@ class OpenRouterTranslator(BaseTranslator):
                     for p in chunk:
                         if p.index == p_idx and len(polished_text) > 3:
                             p.translated_text = self._clean_translated_text(polished_text, p.text)
-            except Exception:
-                # If editor pass fails for any reason, keep the solid draft
-                pass
+            except Exception as e:
+                # Keep the solid draft, but say so: a mistyped
+                # OPENROUTER_POLISH_MODEL fails every batch, and silence here
+                # looked identical to a successful polish.
+                failed_batches += 1
+                logger.warning(
+                    f"Editor pass failed on batch {batch_idx}/{total_batches} "
+                    f"({self.model_name}), keeping the draft: {e}"
+                )
 
             if batch_idx < total_batches:
                 await asyncio.sleep(1.2)
 
         if progress_callback:
-            msg = "Agentic polishing complete! Finalizing and saving..."
+            if failed_batches == total_batches and total_batches:
+                msg = (
+                    f"Editor pass could not run ({self.model_name}); "
+                    "keeping the draft translation."
+                )
+            elif failed_batches:
+                msg = f"Agentic polishing finished with {failed_batches} batch(es) skipped."
+            else:
+                msg = "Agentic polishing complete! Finalizing and saving..."
             if asyncio.iscoroutinefunction(progress_callback):
                 await progress_callback(95, msg)
             else:

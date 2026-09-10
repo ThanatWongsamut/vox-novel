@@ -159,10 +159,15 @@ class TestEngineInterfaceParity(TTSTestCase):
         translator=None,
     )
 
+    def registered_engine_names(self):
+        # Iterate the registry rather than a hardcoded list, so a newly registered
+        # engine (or an alias like "voxcpm") is covered automatically.
+        return sorted(tts_registry._engines)
+
     def test_every_registered_engine_accepts_the_pipeline_call(self):
-        for name in ("dummy", "voxcpm2"):
+        for name in self.registered_engine_names():
             engine = tts_registry.get_tts(name)
-            if name == "voxcpm2":
+            if name.startswith("voxcpm"):
                 engine.api_url = None
                 patcher = mock.patch.object(engine, "_get_local_model", return_value=None)
                 patcher.start()
@@ -178,15 +183,21 @@ class TestEngineInterfaceParity(TTSTestCase):
                 self.fail(f"{name} rejects the pipeline's call: {e}")
 
     def test_base_class_declares_the_same_parameters(self):
+        """Both signatures, every engine -- `synthesize` drifted on this branch too."""
         import inspect
 
         from vox_novel.tts.base import BaseTTS
 
-        base = set(inspect.signature(BaseTTS.synthesize_chapter).parameters)
-        for name in ("dummy", "voxcpm2"):
-            impl = set(inspect.signature(type(tts_registry.get_tts(name)).synthesize_chapter).parameters)
-            missing = base - impl
-            self.assertFalse(missing, f"{name} is missing {missing} from the BaseTTS contract")
+        for method in ("synthesize", "synthesize_chapter"):
+            base = set(inspect.signature(getattr(BaseTTS, method)).parameters)
+            for name in self.registered_engine_names():
+                impl = set(
+                    inspect.signature(getattr(type(tts_registry.get_tts(name)), method)).parameters
+                )
+                missing = base - impl
+                self.assertFalse(
+                    missing, f"{name}.{method} is missing {missing} from the BaseTTS contract"
+                )
 
 
 class TestRegistry(TTSTestCase):

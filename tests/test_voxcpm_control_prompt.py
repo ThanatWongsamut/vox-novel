@@ -258,18 +258,55 @@ class TestWrapperStripping(unittest.TestCase):
 
 
 class TestVoxCPMPatchGuard(unittest.TestCase):
-    def test_patch_targets_a_pinned_version(self):
-        # The patch is a copy of upstream's _inference; it must not be applied to a
-        # version it was not derived from.
-        self.assertRegex(VoxCPM2TTS.PATCHED_VOXCPM_VERSION, r"^\d+\.\d+\.\d+$")
-        self.assertEqual(VoxCPM2TTS._EXPECTED_INFERENCE_PARAMS[0], "self")
-        self.assertIn("min_len", VoxCPM2TTS._EXPECTED_INFERENCE_PARAMS)
+    def test_patch_targets_the_installed_version(self):
+        # The guard exists to catch drift, so assert against reality rather than a
+        # shape: a version bump must fail here, not silently degrade synthesis to
+        # placeholder tones at runtime.
+        installed = VoxCPM2TTS._installed_voxcpm_version()
+        if installed is None:
+            self.skipTest("voxcpm not installed")
+        self.assertEqual(
+            VoxCPM2TTS.PATCHED_VOXCPM_VERSION,
+            installed,
+            "voxcpm was upgraded: re-derive the patch from the new _inference, "
+            "then update PATCHED_VOXCPM_VERSION",
+        )
 
-    def test_patch_runs_under_inference_mode(self):
+    def test_expected_signature_matches_the_installed_one(self):
         import inspect
 
-        src = inspect.getsource(VoxCPM2TTS._patch_voxcpm_inference)
-        self.assertIn("@torch.inference_mode()", src)
+        try:
+            from voxcpm.model.voxcpm2 import VoxCPM2Model
+        except ImportError:
+            self.skipTest("voxcpm not installed")
+        actual = tuple(inspect.signature(VoxCPM2Model._inference).parameters)
+        self.assertEqual(
+            VoxCPM2TTS._EXPECTED_INFERENCE_PARAMS,
+            actual,
+            "upstream _inference signature changed; the patch must be re-derived",
+        )
+
+    def test_patch_runs_under_inference_mode(self):
+        """Assert the decorator actually takes effect, not that the text appears."""
+        try:
+            import torch
+            from voxcpm.model.voxcpm2 import VoxCPM2Model
+        except ImportError:
+            self.skipTest("voxcpm/torch not installed")
+
+        VoxCPM2TTS._patch_voxcpm_inference()
+        observed = {}
+
+        class Probe:
+            def __getattr__(self, name):
+                observed["enabled"] = torch.is_inference_mode_enabled()
+                raise RuntimeError("stop after the first attribute access")
+
+        # feat.shape is the first attribute the body touches.
+        gen = VoxCPM2Model._inference(Probe(), None, None, Probe(), None)
+        with self.assertRaises(RuntimeError):
+            next(gen)
+        self.assertTrue(observed.get("enabled"), "patched inference ran with autograd on")
 
 
 if __name__ == "__main__":
