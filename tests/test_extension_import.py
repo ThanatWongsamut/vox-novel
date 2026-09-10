@@ -250,6 +250,64 @@ class TestVoicePromptValidation(ExtensionApiTestCase):
         self.assertEqual(res.status_code, 400)
 
 
+class TestVoicePromptPersistence(ExtensionApiTestCase):
+    """The description and its derived control prompt must land in one write.
+
+    update_narrator_voice clears the cached control whenever the description
+    changes, so writing them separately relies on ordering that is easy to break.
+    """
+
+    class FailingTranslator:
+        async def complete(self, *a, **k):
+            raise RuntimeError("LLM down")
+
+    def knowledge(self, series="s1"):
+        return json.loads((self.tmp / series / "knowledge_th.json").read_text(encoding="utf-8"))
+
+    def test_description_and_control_are_both_persisted(self):
+        from vox_novel.pipeline.manager import NovelPipeline
+
+        # No translator: the keyword table fills in, and the suite stays offline.
+        with mock.patch.object(
+            NovelPipeline, "voice_prompt_translator", staticmethod(lambda: None)
+        ):
+            res = self.client.post(
+            "/api/voices/update-prompt",
+                json={
+                    "series_id": "s1",
+                    "voice_type": "narrator",
+                    "voice_description": "เสียงหวานใส ร่าเริง",
+                },
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        k = self.knowledge()
+        self.assertEqual(k["narrator_voice_description"], "เสียงหวานใส ร่าเริง")
+        self.assertTrue(
+            k["narrator_voice_control_prompt"],
+            "the control prompt must survive the description write",
+        )
+
+    def test_llm_failure_still_saves_both(self):
+        from vox_novel.pipeline.manager import NovelPipeline
+
+        with mock.patch.object(
+            NovelPipeline, "voice_prompt_translator",
+            staticmethod(lambda: self.FailingTranslator()),
+        ):
+            res = self.client.post(
+                "/api/voices/update-prompt",
+                json={
+                    "series_id": "s1",
+                    "voice_type": "narrator",
+                    "voice_description": "เสียงหวานใส ร่าเริง",
+                },
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        k = self.knowledge()
+        self.assertTrue(k["narrator_voice_description"])
+        self.assertTrue(k["narrator_voice_control_prompt"], "keyword table should fill in")
+
+
 class TestCorsPolicy(ExtensionApiTestCase):
     def test_arbitrary_origin_is_not_allowed(self):
         res = self.client.get(

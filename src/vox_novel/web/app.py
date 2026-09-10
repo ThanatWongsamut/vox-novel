@@ -953,28 +953,32 @@ async def update_voice_prompt(request: Request):
 
     series_id = safe_id(series_id, "series_id")
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
-    if voice_type == "narrator":
-        knowledge.update_narrator_voice(voice_description=voice_description)
-    elif voice_type == "character":
+
+    char = None
+    if voice_type == "character":
         if not character_name:
             raise HTTPException(status_code=400, detail="character_name is required for character voice")
         # character_name may be an alias -- store against the canonical name.
         char = knowledge.find_character(character_name)
         if not char:
             raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
-        knowledge.update_character_voice(char.name_en, voice_description=voice_description)
 
     # Derive the English control prompt now, while the user is waiting on a single
     # save, rather than during synthesis where it would delay the whole chapter.
+    # Resolve it before writing, so the description and its control land together.
     from vox_novel.tts.voxcpm import VoxCPM2TTS
 
     control = await VoxCPM2TTS.derive_control_prompt(
         voice_description, translator=pipeline.voice_prompt_translator()
     )
     if voice_type == "narrator":
-        knowledge.update_narrator_voice(voice_control_prompt=control)
+        knowledge.update_narrator_voice(
+            voice_description=voice_description, voice_control_prompt=control
+        )
     else:
-        knowledge.update_character_voice(char.name_en, voice_control_prompt=control)
+        knowledge.update_character_voice(
+            char.name_en, voice_description=voice_description, voice_control_prompt=control
+        )
 
     knowledge_mgr.save(knowledge)
     return {

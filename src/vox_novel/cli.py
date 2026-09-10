@@ -409,7 +409,6 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
         choices=[
             "OpenRouter (google/gemma-4-31b-it:free) [Recommended]",
             "OpenRouter (z-ai/glm-5.2:free)",
-            "OpenRouter (google/gemma-4-31b-it:free)",
             "Google Gemini (gemini-2.5-flash)",
             "Dummy / Mock (Instant test)",
         ],
@@ -428,7 +427,7 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
         model_name = "gemini-2.5-flash"
     elif "glm-5.2" in translator_choice:
         model_name = "z-ai/glm-5.2:free"
-    if "gemma-4-31b" in translator_choice:
+    elif "gemma-4-31b" in translator_choice:
         model_name = "google/gemma-4-31b-it:free"
 
     agentic_mode = True
