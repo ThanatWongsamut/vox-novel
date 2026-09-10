@@ -60,7 +60,12 @@ class AnchorTestCase(unittest.TestCase):
         original = engine.synthesize
 
         async def spy(**kwargs):
-            calls.append((Path(kwargs["output_file"]).name, kwargs.get("control_prompt")))
+            name = Path(kwargs["output_file"]).name
+            # The anchor is written to a staging file and renamed into place, so
+            # normalize it back to the name callers reason about.
+            if name.startswith("narrator_ref"):
+                name = "narrator_ref.wav"
+            calls.append((name, kwargs.get("control_prompt")))
             return await original(**kwargs)
 
         with mock.patch.object(engine, "synthesize", spy):
@@ -120,15 +125,18 @@ class TestAnchorStaleness(AnchorTestCase):
             "narrator_ref.wav", second, "an unchanged voice must not be re-synthesized"
         )
 
-    def test_user_supplied_reference_is_never_overwritten(self):
+    def write_supplied_anchor(self):
         import numpy as np
         import soundfile as sf
 
         self.voices.mkdir(parents=True, exist_ok=True)
         supplied = self.voices / "narrator_ref.wav"
         sf.write(supplied, np.zeros(2400, dtype=np.float32), 48000)
-        before = supplied.read_bytes()
+        return supplied
 
+    def test_explicit_reference_argument_is_never_overwritten(self):
+        supplied = self.write_supplied_anchor()
+        before = supplied.read_bytes()
         engine = self.offline_engine()
         asyncio.run(
             engine.synthesize_chapter(
@@ -139,6 +147,25 @@ class TestAnchorStaleness(AnchorTestCase):
             )
         )
         self.assertEqual(supplied.read_bytes(), before, "uploaded reference was clobbered")
+
+    def test_unstamped_file_on_disk_is_never_overwritten(self):
+        """The path that actually regressed: a wav is present with no stamp and
+        knowledge carries no pointer to it, so nothing marks it as ours."""
+        supplied = self.write_supplied_anchor()
+        before = supplied.read_bytes()
+
+        engine = self.offline_engine()
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter(),
+                output_dir=self.out,
+                voice_description="เสียงบรรยายผู้ชาย",
+                translator=Translator("a completely different voice"),
+            )
+        )
+        self.assertEqual(
+            supplied.read_bytes(), before, "an unstamped user file was regenerated"
+        )
 
 
 class TestEmotionTraits(unittest.TestCase):
@@ -169,24 +196,38 @@ class TestReferenceCache(unittest.TestCase):
             engine._encoded_reference(f)
         self.assertLessEqual(len(engine._ref_cache), VoxCPM2TTS.MAX_REF_CACHE_ENTRIES)
 
-    def test_hot_entry_survives_eviction(self):
-        """The narrator anchor is reused constantly; FIFO would evict it each cycle."""
+    def test_hot_entry_is_never_re_encoded(self):
+        """Count disk reads, not membership.
+
+        Asserting the anchor is still cached at the end passes under FIFO too,
+        because the final touch reinserts it. What distinguishes LRU is that a
+        constantly-used entry is never evicted, so it is read from disk once.
+        """
         engine = VoxCPM2TTS()
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
 
         anchor = tmp / "narrator_ref.wav"
         anchor.write_bytes(b"anchor")
-        engine._encoded_reference(anchor)
 
-        for i in range(VoxCPM2TTS.MAX_REF_CACHE_ENTRIES + 4):
-            f = tmp / f"other{i}.wav"
-            f.write_bytes(b"y" * 16)
-            engine._encoded_reference(f)
-            engine._encoded_reference(anchor)  # touched every round, as in a chapter
+        reads = []
+        real_read = Path.read_bytes
 
-        stat = anchor.stat()
-        self.assertIn((str(anchor), stat.st_mtime_ns, stat.st_size), engine._ref_cache)
+        def counting_read(self):
+            reads.append(str(self))
+            return real_read(self)
+
+        with mock.patch.object(Path, "read_bytes", counting_read):
+            engine._encoded_reference(anchor)
+            for i in range(VoxCPM2TTS.MAX_REF_CACHE_ENTRIES + 4):
+                f = tmp / f"other{i}.wav"
+                f.write_bytes(b"y" * 16)
+                engine._encoded_reference(f)
+                engine._encoded_reference(anchor)  # reused every round, as in a chapter
+
+        self.assertEqual(
+            reads.count(str(anchor)), 1, "the hot entry was evicted and re-encoded"
+        )
 
 
 if __name__ == "__main__":

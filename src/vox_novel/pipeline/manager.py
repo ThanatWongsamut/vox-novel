@@ -197,20 +197,28 @@ class NovelPipeline:
         edited must not be restored either, since that recreates the description /
         prompt mismatch the invalidation in SeriesKnowledge exists to prevent.
         """
+        def _current(stored: Optional[str], derived_from: Optional[str]) -> bool:
+            # A prompt belongs to the stored description only if it was derived from
+            # exactly that text. This rejects both a mid-job edit and a per-chapter
+            # `voice` override, which would otherwise be written back as the series
+            # voice and cement a description/prompt mismatch.
+            return (stored or "").strip() == (derived_from or "").strip()
+
         fresh = self.knowledge.load_or_init(series_id)
-        if (
-            knowledge.narrator_voice_control_prompt
-            and fresh.narrator_voice_description == knowledge.narrator_voice_description
+        if knowledge.narrator_voice_control_prompt and _current(
+            fresh.narrator_voice_description, knowledge.narrator_voice_control_source
         ):
             fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
+            fresh.narrator_voice_control_source = knowledge.narrator_voice_control_source
         for char in knowledge.characters.values():
             target = fresh.find_character(char.name_en)
             if (
                 target is not None
                 and char.voice_control_prompt
-                and target.voice_description == char.voice_description
+                and _current(target.voice_description, char.voice_control_source)
             ):
                 target.voice_control_prompt = char.voice_control_prompt
+                target.voice_control_source = char.voice_control_source
         self.knowledge.save(fresh)
 
     @staticmethod

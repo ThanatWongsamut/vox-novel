@@ -114,10 +114,31 @@ class TestControlPromptMerge(unittest.TestCase):
         self.km.save(k)
 
         job_copy = self.km.load_or_init("s")
+        # Synthesis records both the prompt and the description it came from.
         job_copy.narrator_voice_control_prompt = "old male narrator"
+        job_copy.narrator_voice_control_source = "เสียงชายแก่"
 
         out = self.merge(job_copy)
         self.assertEqual(out.narrator_voice_control_prompt, "old male narrator")
+
+    def test_a_per_chapter_voice_override_is_not_written_back(self):
+        """`/api/synthesize-chapter` takes a one-off `voice`; it must not become
+        the series voice, which would leave the stored description paired with a
+        prompt derived from different text."""
+        k = self.km.load_or_init("s")
+        k.update_narrator_voice(voice_description="เสียงชายแก่ ทุ้มลึก")
+        self.km.save(k)
+
+        job_copy = self.km.load_or_init("s")
+        job_copy.narrator_voice_control_prompt = "female voice, child, sweet melodic"
+        job_copy.narrator_voice_control_source = "เด็กหญิง เสียงหวานใส"   # the override
+
+        out = self.merge(job_copy)
+        self.assertEqual(out.narrator_voice_description, "เสียงชายแก่ ทุ้มลึก")
+        self.assertIsNone(
+            out.narrator_voice_control_prompt,
+            "a one-off override was persisted as the series voice",
+        )
 
     def test_character_prompt_follows_the_same_rule(self):
         k = self.km.load_or_init("s")
@@ -126,7 +147,9 @@ class TestControlPromptMerge(unittest.TestCase):
         self.km.save(k)
 
         job_copy = self.km.load_or_init("s")
-        job_copy.find_character("Aria").voice_control_prompt = "sweet female voice"
+        aria = job_copy.find_character("Aria")
+        aria.voice_control_prompt = "sweet female voice"
+        aria.voice_control_source = "เสียงหวานใส"
 
         edit = self.km.load_or_init("s")
         edit.update_character_voice("Aria", voice_description="เสียงห้าว ผู้ชาย")

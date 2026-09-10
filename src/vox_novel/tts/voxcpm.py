@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import re
+import shutil
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, List, Optional
@@ -463,13 +464,13 @@ class VoxCPM2TTS(BaseTTS):
     # comfortably covers a cast while bounding memory in a long-lived process.
     MAX_REF_CACHE_ENTRIES = 32
 
-    # Traits that describe how a line is delivered, as opposed to who is speaking.
-    # Only these may be appended to a speaker's control prompt for one paragraph.
-    _EMOTION_TRAITS: frozenset = frozenset({
-        "angry", "melancholic", "sad", "fearful", "suspenseful", "whispering",
-        "playful", "bright", "cheerful", "lively", "cool", "calm", "serious",
-        "solemn", "confident", "warm", "kind", "friendly", "mysterious",
-        "enchanting", "charming", "cute", "fierce",
+    # Traits that describe *who* is speaking rather than how one line is delivered.
+    # These are excluded when an emotion is folded into a speaker's control prompt,
+    # since the speaker's own identity is already established.
+    _IDENTITY_TRAITS: frozenset = frozenset({
+        "noble lady", "elegant gentlewoman", "noble gentleman", "young girl",
+        "young boy", "child", "elderly", "teenager", "soft and deep", "deep voice",
+        "fantasy storytelling",
     })
     # Voice design must not stall a chapter because the LLM is slow or down;
     # the keyword table is always available as a fallback.
@@ -600,11 +601,13 @@ class VoxCPM2TTS(BaseTTS):
             return ""
         built = cls.build_control_prompt(None, emotion=emotion)
         traits = built.split(", ", 1)[1] if ", " in built else ""
-        # Keep only affect. A description like "เสียงหญิงชราโกรธ" also yields
-        # "elderly", which would append an age to an unrelated speaker and override
-        # the timbre the cloned reference already establishes.
+        # Drop terms that describe *who* is speaking. A description like
+        # "เสียงหญิงชราโกรธ" also yields "elderly", which would append an age to an
+        # unrelated speaker and fight the timbre the cloned reference establishes.
+        # Subtracting identity is safer than whitelisting affect: a hand-written
+        # affect list silently drops legitimate terms as the trait table grows.
         return ", ".join(
-            t for t in (x.strip() for x in traits.split(",")) if t in cls._EMOTION_TRAITS
+            t for t in (x.strip() for x in traits.split(",")) if t and t not in cls._IDENTITY_TRAITS
         )
 
     @staticmethod
@@ -900,13 +903,20 @@ class VoxCPM2TTS(BaseTTS):
         default_desc = narrator_desc or "เสียงบรรยายผู้ชาย นุ่มลึก ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
 
         # One control prompt per distinct voice, resolved up front and reused.
+        # An explicit per-chapter voice_description overrides the series voice, so it
+        # must not be resolved from a cache derived from a different description.
         narrator_control = await self._resolve_cached_control(
             description=default_desc,
-            cached=getattr(knowledge, "narrator_voice_control_prompt", None),
+            cached=(
+                None
+                if voice_description
+                else getattr(knowledge, "narrator_voice_control_prompt", None)
+            ),
             translator=translator,
         )
         if knowledge is not None and hasattr(knowledge, "narrator_voice_control_prompt"):
             knowledge.narrator_voice_control_prompt = narrator_control
+            knowledge.narrator_voice_control_source = default_desc
         control_by_speaker: dict = {}
 
         # Ensure a persistent narrator reference voice exists so all narration paragraphs sound identical
@@ -923,15 +933,22 @@ class VoxCPM2TTS(BaseTTS):
             # Every paragraph clones from this anchor and the local engine ignores a
             # control prompt once a reference clip is set, so a stale anchor silently
             # pins the whole series to an old voice. Stamp the control it was built
-            # with and rebuild when that changes.
+            # with and rebuild only when that changes.
+            #
+            # An unstamped wav was put there by the user (upload or an earlier
+            # release); never overwrite it.
             stamp = voices_dir / "narrator_ref.control.txt"
             previous = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
-            if not narrator_sample.exists() or previous != narrator_control:
+            ours = stamp.exists()
+            if not narrator_sample.exists() or (ours and previous != narrator_control):
                 logger.info("Generating canonical narrator reference voice anchor...")
                 sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
+                # Build beside the target and rename: sf.write is not atomic, and a
+                # concurrent job cloning this file would otherwise read it torn.
+                staging = voices_dir / f"narrator_ref.{os.getpid()}.{id(self)}.partial.wav"
                 await self.synthesize(
                     text=sample_text,
-                    output_file=narrator_sample,
+                    output_file=staging,
                     voice_description=default_desc,
                     reference_audio=None,
                     # Without this the anchor is built from the keyword table and
@@ -939,8 +956,20 @@ class VoxCPM2TTS(BaseTTS):
                     # clones from this anchor, it would influence nothing at all.
                     control_prompt=narrator_control,
                 )
+                os.replace(staging, narrator_sample)
                 stamp.write_text(narrator_control or "", encoding="utf-8")
             effective_narrator_ref = narrator_sample
+
+        # Pin the anchor for the rest of this chapter. Another job may replace the
+        # shared file partway through; cloning half the paragraphs from a different
+        # voice is worse than the cost of one copy.
+        if effective_narrator_ref is not None and Path(effective_narrator_ref).exists():
+            pinned = output_dir / f".anchor_{chapter.id}.wav"
+            try:
+                shutil.copyfile(effective_narrator_ref, pinned)
+                effective_narrator_ref = pinned
+            except OSError as e:
+                logger.debug(f"Could not pin narrator anchor, using it in place: {e}")
 
         for idx, p in enumerate(valid_paras):
             text_to_speak = (p.translated_text if use_translated else p.text).strip()
@@ -986,6 +1015,7 @@ class VoxCPM2TTS(BaseTTS):
                                 translator=translator,
                             )
                             char.voice_control_prompt = resolved
+                            char.voice_control_source = char.voice_description
                             control_by_speaker[key] = resolved
                         para_control = control_by_speaker[key]
 
