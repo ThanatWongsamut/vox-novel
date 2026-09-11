@@ -72,9 +72,10 @@ class TestControlPromptBackfill(unittest.TestCase):
     """Synthesis fills a gap; it never overwrites.
 
     The Voice Studio endpoints derive a control prompt at save time, so synthesis
-    only needs to cover a series nothing has derived one for. Writing only into
-    empty fields means a voice edit made during a multi-minute job survives, and a
-    per-chapter override is never mistaken for the series voice.
+    only needs to cover a series nothing has derived one for. A prompt is written
+    back only into an empty field and only when the description it came from still
+    matches what is stored, so a voice edit made during a long job survives while
+    an unrelated glossary write does not suppress the backfill.
     """
 
     def setUp(self):

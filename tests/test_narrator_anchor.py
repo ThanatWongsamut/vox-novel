@@ -308,6 +308,40 @@ class TestConcurrentAnchorBuild(AnchorTestCase):
         self.assertEqual(len(levels), 1, f"the narrator changed mid-chapter: {sorted(levels)}")
 
 
+class TestAnchorLinkFallback(AnchorTestCase):
+    """Hard links are unsupported on exFAT, FAT32 and some network mounts."""
+
+    def build(self, engine, control="steady narrator"):
+        return asyncio.run(engine._narrator_anchor(self.voices, "เสียงชายแก่", control))
+
+    def test_an_unsupported_link_still_produces_an_anchor(self):
+        engine = self.offline_engine()
+        with mock.patch("os.link", side_effect=OSError(1, "Operation not permitted")):
+            anchor = self.build(engine)
+        self.assertTrue(anchor.exists() and anchor.stat().st_size > 0)
+        self.assertEqual(
+            [f.name for f in self.voices.iterdir() if ".partial." in f.name],
+            [],
+            "a staging file was left behind",
+        )
+
+    def test_the_fallback_does_not_clobber_an_existing_anchor(self):
+        """os.replace would overwrite a file another chapter is cloning from."""
+        engine = self.offline_engine()
+        anchor = self.build(engine)
+        anchor.write_bytes(b"IN-USE-BY-ANOTHER-CHAPTER")
+
+        with mock.patch("os.link", side_effect=OSError(1, "Operation not permitted")):
+            again = self.build(engine)
+
+        self.assertEqual(again, anchor)
+        self.assertEqual(
+            anchor.read_bytes(),
+            b"IN-USE-BY-ANOTHER-CHAPTER",
+            "the fallback overwrote an anchor already in use",
+        )
+
+
 class TestAnchorIsVisibleToTheWebLayer(AnchorTestCase):
     """A generated anchor must be reachable by the Voice Studio, or the player is
     empty and the reset button hidden for every series voiced by plain synthesis."""

@@ -198,10 +198,11 @@ class NovelPipeline:
         """Backfill control prompts for a series no endpoint has derived one for.
 
         The Voice Studio endpoints derive at save time, so synthesis only needs to
-        fill a gap -- never to overwrite. Writing only into empty fields removes the
-        need to track which description each prompt came from: an edit made during
-        this multi-minute job is simply left alone, and a per-chapter override is
-        never mistaken for the series voice.
+        fill a gap -- never to overwrite. A prompt is written back only into an
+        empty field AND only when the description it was derived from still matches
+        what is stored, so an edit made during this multi-minute job is left alone
+        while an unrelated write elsewhere in the glossary does not suppress the
+        backfill. A per-chapter override writes nothing at all.
         """
         if overridden:
             return
