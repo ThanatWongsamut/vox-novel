@@ -5,7 +5,6 @@ import inspect
 import logging
 import os
 import re
-import shutil
 import tempfile
 from collections import OrderedDict
 from pathlib import Path
@@ -942,9 +941,11 @@ class VoxCPM2TTS(BaseTTS):
             # record it so it is treated as the reference from now on.
             legacy = voices_dir / "narrator_ref.wav"
             if legacy.exists() and legacy.stat().st_size > 0:
+                # Use it for this run so an audiobook in progress keeps its voice,
+                # but do not record it as the series reference: a stored reference
+                # outranks the control prompt, which would make every later
+                # description edit silently do nothing.
                 effective_narrator_ref = legacy
-                if knowledge is not None and hasattr(knowledge, "narrator_voice_ref_audio"):
-                    knowledge.narrator_voice_ref_audio = str(legacy)
             else:
                 effective_narrator_ref = await self._narrator_anchor(
                     voices_dir, default_desc, narrator_control
@@ -983,8 +984,12 @@ class VoxCPM2TTS(BaseTTS):
 
         logger.info(f"Generating narrator reference voice anchor ({digest})...")
         sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
-        # sf.write is not atomic, and a concurrent job may be cloning this path.
-        staging = voices_dir / f"narrator_ref.{digest}.{os.getpid()}.{id(self)}.partial.wav"
+        # sf.write is not atomic, so build aside and link into place.
+        fd, staging_name = tempfile.mkstemp(
+            dir=voices_dir, prefix=f"narrator_ref.{digest}.", suffix=".partial.wav"
+        )
+        os.close(fd)
+        staging = Path(staging_name)
         try:
             await self.synthesize(
                 text=sample_text,
@@ -996,9 +1001,16 @@ class VoxCPM2TTS(BaseTTS):
                 # from this anchor, it would influence nothing at all.
                 control_prompt=control,
             )
-            os.replace(staging, anchor)
+            try:
+                # Link rather than replace: os.replace would overwrite an anchor a
+                # concurrently running chapter is already cloning from, swapping its
+                # narrator part-way through. Whoever creates it first wins, and the
+                # loser simply uses that file -- the voices are interchangeable.
+                os.link(staging, anchor)
+            except FileExistsError:
+                logger.debug(f"Narrator anchor {digest} was created concurrently; using it.")
         finally:
-            Path(staging).unlink(missing_ok=True)
+            staging.unlink(missing_ok=True)
         return anchor
 
     async def _synthesize_paragraphs(

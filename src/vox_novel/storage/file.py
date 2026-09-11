@@ -154,12 +154,34 @@ class StorageManager:
         return voices_dir
 
     def get_narrator_voice_file(self, series_id: str) -> Optional[Path]:
+        """The narrator clip the reader and Voice Studio should use.
+
+        An upload is written as a bare `narrator_ref.<ext>` and wins. Otherwise
+        synthesis leaves content-addressed anchors, `narrator_ref.<digest>.wav`,
+        one per voice it has generated; the most recent is the current one.
+        """
         voices_dir = self.get_voices_dir(series_id)
         for ext in [".wav", ".mp3", ".m4a", ".flac"]:
             p = voices_dir / f"narrator_ref{ext}"
             if p.exists() and p.stat().st_size > 0:
                 return p
+
+        anchors = [
+            f for f in voices_dir.glob("narrator_ref.*.wav")
+            if f.is_file() and f.stat().st_size > 0 and ".partial." not in f.name
+        ]
+        if anchors:
+            return max(anchors, key=lambda f: f.stat().st_mtime)
         return None
+
+    def _narrator_voice_files(self, series_id: str) -> List[Path]:
+        """Every narrator clip for a series, uploads and generated anchors alike."""
+        voices_dir = self.get_voices_dir(series_id)
+        found = [
+            voices_dir / f"narrator_ref{ext}" for ext in (".wav", ".mp3", ".m4a", ".flac")
+        ]
+        found += list(voices_dir.glob("narrator_ref.*.wav"))
+        return [f for f in dict.fromkeys(found) if f.is_file() and ".partial." not in f.name]
 
     def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
         voices_dir = self.get_voices_dir(series_id)
@@ -176,10 +198,14 @@ class StorageManager:
     def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
         voices_dir = self.get_voices_dir(series_id)
         if voice_type == "narrator":
-            target = self.get_narrator_voice_file(series_id)
-            if target and target.exists():
-                target.unlink()
-                return True
+            # Remove every anchor, not just the current one. "Reset" means re-roll
+            # the narrator, and leaving older anchors behind would let one come back
+            # as "most recent" the moment the newest is deleted.
+            removed = False
+            for target in self._narrator_voice_files(series_id):
+                target.unlink(missing_ok=True)
+                removed = True
+            return removed
         elif character_name:
             target = self.get_character_voice_file(series_id, character_name)
             if target and target.exists():

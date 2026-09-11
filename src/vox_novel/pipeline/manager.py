@@ -206,6 +206,12 @@ class NovelPipeline:
         if overridden:
             return
         fresh = self.knowledge.load_or_init(series_id, target_lang=knowledge.target_language)
+        if fresh.last_updated > knowledge.last_updated:
+            # Something was edited while this job ran. A description change clears
+            # the cached prompt rather than replacing it, so an empty field here is
+            # deliberate -- backfilling would restore a prompt describing the old
+            # voice, and nothing would invalidate it again.
+            return
         dirty = False
         if knowledge.narrator_voice_control_prompt and not fresh.narrator_voice_control_prompt:
             fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
@@ -215,10 +221,6 @@ class NovelPipeline:
             if target is not None and char.voice_control_prompt and not target.voice_control_prompt:
                 target.voice_control_prompt = char.voice_control_prompt
                 dirty = True
-        if knowledge.narrator_voice_ref_audio and not fresh.narrator_voice_ref_audio:
-            # Adoption of a legacy anchor.
-            fresh.narrator_voice_ref_audio = knowledge.narrator_voice_ref_audio
-            dirty = True
         if dirty:
             self.knowledge.save(fresh)
 

@@ -207,8 +207,39 @@ class TestAnchorStaleness(AnchorTestCase):
             )
         )
         self.assertEqual(legacy.read_bytes(), before, "a legacy anchor was overwritten")
-        self.assertEqual(
-            k.narrator_voice_ref_audio, str(legacy), "the legacy file was not adopted"
+        self.assertIsNone(
+            k.narrator_voice_ref_audio,
+            "recording it as the series reference would outrank the control prompt "
+            "and make later description edits do nothing",
+        )
+
+    def test_a_legacy_anchor_does_not_freeze_later_edits(self):
+        """Using a legacy file for one run must not pin the series voice."""
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        self.write_supplied_anchor()
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.update_narrator_voice(voice_description="เสียงชายแก่")
+
+        engine = self.offline_engine()
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter("1"), output_dir=self.out, knowledge=k,
+                translator=Translator("old male narrator"),
+            )
+        )
+        # The description changes; the next chapter must not still use the legacy clip.
+        k.update_narrator_voice(voice_description="เสียงเด็กหญิง หวานใส")
+        (self.voices / "narrator_ref.wav").unlink()
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter("2"), output_dir=self.out, knowledge=k,
+                translator=Translator("young girl narrator, sweet"),
+            )
+        )
+        self.assertTrue(
+            list(self.voices.glob("narrator_ref.*.wav")),
+            "a new anchor was never generated for the edited description",
         )
 
 
@@ -227,6 +258,91 @@ class TestEmotionTraits(unittest.TestCase):
         self.assertEqual(VoxCPM2TTS._emotion_traits("ไม่มีคำนี้เลย"), "")
         self.assertEqual(VoxCPM2TTS._emotion_traits(None), "")
         self.assertEqual(VoxCPM2TTS._emotion_traits(""), "")
+
+
+class TestConcurrentAnchorBuild(AnchorTestCase):
+    """Two chapters of one series may synthesize at once (two browser tabs).
+
+    Both find the anchor absent and both build it. Whoever lands second must not
+    replace a file the other is already cloning from, or that chapter's narrator
+    changes part-way through.
+    """
+
+    def test_concurrent_first_build_yields_one_anchor_and_one_voice(self):
+        import soundfile as sf
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.update_narrator_voice(
+            voice_description="เสียงชายแก่", voice_control_prompt="steady narrator"
+        )
+        e1, e2 = self.offline_engine(), self.offline_engine()
+
+        async def both():
+            await asyncio.gather(
+                e1.synthesize_chapter(
+                    chapter=chapter("c1", n=4), output_dir=self.out, knowledge=k,
+                    translator=Translator("steady narrator"),
+                ),
+                e2.synthesize_chapter(
+                    chapter=chapter("c2", n=4), output_dir=self.out, knowledge=k,
+                    translator=Translator("steady narrator"),
+                ),
+            )
+
+        asyncio.run(both())
+
+        anchors = list(self.voices.glob("narrator_ref.*.wav"))
+        self.assertEqual(len(anchors), 1, f"expected one anchor, got {[a.name for a in anchors]}")
+        self.assertEqual(
+            [f.name for f in self.voices.iterdir() if ".partial." in f.name],
+            [],
+            "a staging file was left behind",
+        )
+
+        # Every paragraph of one chapter clones the same anchor, so levels match.
+        levels = {
+            round(float(abs(sf.read(f)[0]).max()), 3)
+            for f in sorted(self.out.glob("para_c1_*.wav"))
+        }
+        self.assertEqual(len(levels), 1, f"the narrator changed mid-chapter: {sorted(levels)}")
+
+
+class TestAnchorIsVisibleToTheWebLayer(AnchorTestCase):
+    """A generated anchor must be reachable by the Voice Studio, or the player is
+    empty and the reset button hidden for every series voiced by plain synthesis."""
+
+    def storage(self):
+        from vox_novel.storage.file import StorageManager
+
+        base = self.tmp / "store"
+        (base / "s1" / "voices").mkdir(parents=True)
+        return StorageManager(base_dir=base), base / "s1" / "voices"
+
+    def test_a_content_addressed_anchor_is_found(self):
+        st, voices = self.storage()
+        (voices / "narrator_ref.8443cafd.wav").write_bytes(b"anchor")
+        self.assertIsNotNone(st.get_narrator_voice_file("s1"))
+
+    def test_an_upload_outranks_a_generated_anchor(self):
+        st, voices = self.storage()
+        (voices / "narrator_ref.8443cafd.wav").write_bytes(b"anchor")
+        (voices / "narrator_ref.wav").write_bytes(b"upload")
+        self.assertEqual(st.get_narrator_voice_file("s1").name, "narrator_ref.wav")
+
+    def test_reset_removes_every_anchor(self):
+        st, voices = self.storage()
+        for name in ("narrator_ref.wav", "narrator_ref.aaaa1111.wav", "narrator_ref.bbbb2222.wav"):
+            (voices / name).write_bytes(b"x")
+        self.assertTrue(st.delete_voice_file("s1", "narrator"))
+        self.assertIsNone(
+            st.get_narrator_voice_file("s1"), "an older anchor resurfaced after a reset"
+        )
+
+    def test_a_staging_file_is_never_offered(self):
+        st, voices = self.storage()
+        (voices / "narrator_ref.8443cafd.1.partial.wav").write_bytes(b"half written")
+        self.assertIsNone(st.get_narrator_voice_file("s1"))
 
 
 class TestControlPromptCaching(AnchorTestCase):
