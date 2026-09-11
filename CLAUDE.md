@@ -75,6 +75,15 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
   version and refuses to apply otherwise.
 - Commits and PR descriptions carry no AI attribution.
 
+## Known gaps
+
+- **Per-character voices are wired but inert.** `Paragraph.speaker` is never
+  assigned, so `VoxCPM2TTS.synthesize_chapter`'s character branch, the
+  per-speaker prompt cache and the emotion suffix cannot run. Everything
+  downstream of speaker detection is built and tested; adding detection turns it
+  on. Until then, every paragraph uses the narrator voice.
+- **There is no CI.** The test suite only runs when someone runs it.
+
 ## Sources
 
 ReadToon renders chapters client-side and gates paid ones behind Turnstile, so

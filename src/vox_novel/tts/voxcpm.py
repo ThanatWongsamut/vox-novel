@@ -1036,6 +1036,10 @@ class VoxCPM2TTS(BaseTTS):
             para_ref_audio = effective_narrator_ref
             para_emotion = p.emotion
 
+            # Per-character voices. Inert for now: nothing assigns Paragraph.speaker,
+            # so this branch, control_by_speaker and the emotion suffix never run.
+            # Speaker detection is a separate change; this is kept wired and tested
+            # so it works the moment paragraphs carry a speaker.
             if knowledge and p.speaker and p.speaker.strip().lower() not in ("narrator", "ผู้บรรยาย"):
                 char = knowledge.find_character(p.speaker)
                 if char:
