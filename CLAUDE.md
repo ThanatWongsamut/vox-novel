@@ -64,6 +64,11 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
 - **CORS is an explicit origin allowlist, never `*`.** The Chrome importer runs
   as a content script, so its requests carry the page origin. A wildcard with
   credentials would let any visited site read this server.
+- **The narrator anchor is content-addressed** — `voices/narrator_ref.<sha8>.wav`,
+  named for the control prompt that produced it and never rewritten. Every
+  paragraph clones from it, so a mutable shared file meant a one-off `--voice` run
+  or a second concurrent job could silently re-voice a series mid-book. A different
+  voice is a different file; nothing needs to detect staleness.
 - `voxcpm` is an optional `tts` extra and is **pinned**, because
   `VoxCPM2TTS._patch_voxcpm_inference` replaces an upstream method with a copy of
   that specific version's implementation. The patch verifies the installed
