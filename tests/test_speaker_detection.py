@@ -223,5 +223,121 @@ class TestExtraction(unittest.TestCase):
         self.assertEqual(len(k.characters), 1)
 
 
+class TestPipelineWiring(unittest.TestCase):
+    """detect_speakers writes through to disk and is re-runnable."""
+
+    def setUp(self):
+        import shutil, tempfile
+        from pathlib import Path
+        from vox_novel.pipeline.manager import NovelPipeline
+        from vox_novel.storage.file import StorageManager
+        from vox_novel.storage.knowledge import KnowledgeManager
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.storage = StorageManager(base_dir=self.tmp)
+        self.km = KnowledgeManager(base_dir=self.tmp)
+        self.pipeline = NovelPipeline(storage_manager=self.storage, knowledge_manager=self.km)
+
+        chap = chapter(3)
+        chap.target_language = "th"
+        self.storage.save_chapter(chap)
+
+        k = self.km.load_or_init("b", target_lang="th")
+        k.add_character("ริโก้", "ริโก้")
+        self.km.save(k)
+
+    def detect(self, *responses, **kw):
+        from unittest import mock
+
+        t = FakeTranslator(*responses)
+        with mock.patch.object(
+            type(self.pipeline), "speaker_translator", staticmethod(lambda: t)
+        ):
+            return asyncio.run(
+                self.pipeline.detect_speakers("b", "1", **kw)
+            )
+
+    def test_attributions_are_persisted_to_the_chapter(self):
+        self.detect(
+            ChunkAnnotation(segments=[
+                seg(1, "narration", None), seg(2, "dialogue", "ริโก้"), seg(3, "narration", None),
+            ])
+        )
+        saved = self.storage.get_chapter("b", "1")
+        self.assertEqual(
+            [(p.index, p.speech_type, p.speaker) for p in saved.paragraphs],
+            [(1, "narration", None), (2, "dialogue", "ริโก้"), (3, "narration", None)],
+        )
+
+    def test_a_newly_seen_speaker_is_persisted_to_the_registry(self):
+        self.detect(
+            ChunkAnnotation(segments=[seg(1, "dialogue", "พุดดิ้ง"), seg(2, "narration", None),
+                                      seg(3, "narration", None)])
+        )
+        k = self.km.load_or_init("b", target_lang="th")
+        self.assertIsNotNone(k.find_character("พุดดิ้ง"))
+
+    def test_rerunning_overwrites_rather_than_accumulating(self):
+        self.detect(ChunkAnnotation(segments=[seg(i, "dialogue", "ริโก้") for i in (1, 2, 3)]))
+        self.detect(ChunkAnnotation(segments=[seg(i, "narration", None) for i in (1, 2, 3)]))
+        saved = self.storage.get_chapter("b", "1")
+        self.assertEqual({p.speech_type for p in saved.paragraphs}, {"narration"})
+        self.assertTrue(all(p.speaker is None for p in saved.paragraphs))
+
+    def test_no_llm_configured_is_an_actionable_error(self):
+        from unittest import mock
+
+        with mock.patch.object(
+            type(self.pipeline), "speaker_translator", staticmethod(lambda: None)
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(self.pipeline.detect_speakers("b", "1"))
+        self.assertIn("OPENROUTER_BASE_URL", str(ctx.exception))
+
+    def test_a_missing_chapter_is_reported_clearly(self):
+        from unittest import mock
+
+        t = FakeTranslator()
+        with mock.patch.object(
+            type(self.pipeline), "speaker_translator", staticmethod(lambda: t)
+        ):
+            with self.assertRaises(ValueError):
+                asyncio.run(self.pipeline.detect_speakers("b", "nope"))
+
+
+class TestLocalServerConfig(unittest.TestCase):
+    def test_base_url_comes_from_the_environment(self):
+        import os
+        from unittest import mock
+        from vox_novel.translators.openrouter import OpenRouterTranslator
+
+        with mock.patch.dict(os.environ, {"OPENROUTER_BASE_URL": "http://localhost:11434/v1"}):
+            self.assertEqual(
+                OpenRouterTranslator(api_key="x").base_url, "http://localhost:11434/v1"
+            )
+
+    def test_an_explicit_argument_still_wins(self):
+        import os
+        from unittest import mock
+        from vox_novel.translators.openrouter import OpenRouterTranslator
+
+        with mock.patch.dict(os.environ, {"OPENROUTER_BASE_URL": "http://env/v1"}):
+            self.assertEqual(
+                OpenRouterTranslator(api_key="x", base_url="http://explicit/v1").base_url,
+                "http://explicit/v1",
+            )
+
+    def test_a_local_server_needs_no_api_key(self):
+        import os
+        from unittest import mock
+        from vox_novel.pipeline.manager import NovelPipeline
+
+        env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+        env["OPENROUTER_BASE_URL"] = "http://localhost:11434/v1"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNotNone(NovelPipeline.speaker_translator())
+
+
 if __name__ == "__main__":
     unittest.main()

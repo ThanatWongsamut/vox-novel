@@ -49,7 +49,12 @@ class OpenRouterTranslator(BaseTranslator):
                 # retried against a 404. Set OPENROUTER_FALLBACK_MODELS to opt in.
                 self.fallback_models = []
 
-        self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        # OPENROUTER_BASE_URL points the client at any OpenAI-compatible server --
+        # Ollama, vLLM, llama.cpp -- so a local GPU can serve translation and
+        # speaker attribution with no per-chapter cost and no rate limit.
+        self.base_url = (
+            base_url or os.getenv("OPENROUTER_BASE_URL") or self.DEFAULT_BASE_URL
+        ).rstrip("/")
         self.timeout = timeout
 
     @property
