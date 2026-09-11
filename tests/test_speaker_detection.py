@@ -148,6 +148,88 @@ class TestAttribution(unittest.TestCase):
         self.assertEqual([x["paragraph"] for x in result["low_confidence"]], [1])
 
 
+class TestAgreementGate(unittest.TestCase):
+    """Two models must agree before a paragraph gets a character voice.
+
+    A wrong voice is worse for a listener than no voice: the narrator reading
+    everything is consistent, a voice switching mid-conversation is not. So an
+    uncertain attribution falls back to narration, which sounds exactly as it
+    does today.
+    """
+
+    def gated(self, primary, secondary, n=3):
+        chap, k = chapter(n), knowledge_with("ริโก้", "พุดดิ้ง")
+        result = asyncio.run(
+            annotate_chapter(
+                chap, k, FakeTranslator(ChunkAnnotation(segments=primary)),
+                confirm_with=FakeTranslator(ChunkAnnotation(segments=secondary)),
+            )
+        )
+        return chap, result
+
+    def test_agreement_keeps_the_attribution(self):
+        chap, result = self.gated([seg(1, "dialogue", "ริโก้")], [seg(1, "dialogue", "ริโก้")], n=1)
+        self.assertEqual(chap.paragraphs[0].speaker, "ริโก้")
+        self.assertEqual(result["disagreements"], [])
+
+    def test_a_different_speaker_falls_back_to_narration(self):
+        chap, result = self.gated([seg(1, "dialogue", "ริโก้")], [seg(1, "dialogue", "พุดดิ้ง")], n=1)
+        self.assertIsNone(chap.paragraphs[0].speaker, "a disputed line kept a character voice")
+        self.assertEqual(chap.paragraphs[0].speech_type, "narration")
+        self.assertEqual(len(result["disagreements"]), 1)
+
+    def test_a_different_type_also_disagrees(self):
+        # Same speaker, but one calls it thought and the other dialogue.
+        chap, _ = self.gated([seg(1, "thought", "ริโก้")], [seg(1, "dialogue", "ริโก้")], n=1)
+        self.assertEqual(chap.paragraphs[0].speech_type, "narration")
+
+    def test_silence_from_the_second_model_counts_as_disagreement(self):
+        # Absence is not assent: the second model saying nothing is not a vote.
+        chap, result = self.gated([seg(1, "dialogue", "ริโก้")], [], n=1)
+        self.assertIsNone(chap.paragraphs[0].speaker)
+        self.assertEqual(len(result["disagreements"]), 1)
+
+    def test_agreement_on_narration_needs_no_special_case(self):
+        chap, result = self.gated([seg(1, "narration", None)], [seg(1, "narration", None)], n=1)
+        self.assertEqual(chap.paragraphs[0].speech_type, "narration")
+        self.assertEqual(result["disagreements"], [])
+
+    def test_only_the_disputed_paragraph_is_downgraded(self):
+        chap, result = self.gated(
+            [seg(1, "dialogue", "ริโก้"), seg(2, "dialogue", "ริโก้"), seg(3, "narration", None)],
+            [seg(1, "dialogue", "ริโก้"), seg(2, "dialogue", "พุดดิ้ง"), seg(3, "narration", None)],
+        )
+        self.assertEqual(chap.paragraphs[0].speaker, "ริโก้", "an agreed line was dropped")
+        self.assertIsNone(chap.paragraphs[1].speaker)
+        self.assertEqual([d["paragraph"] for d in result["disagreements"]], [2])
+
+    def test_an_alias_is_not_counted_as_disagreement(self):
+        # Both models mean the same character under different spellings; the
+        # canonicaliser runs before the comparison, so they agree.
+        chap = chapter(1)
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.add_character("ริโก้", "ริโก้", aliases=["ริโก้ราดกา"])
+        result = asyncio.run(
+            annotate_chapter(
+                chap, k,
+                FakeTranslator(ChunkAnnotation(segments=[seg(1, "dialogue", "ริโก้")])),
+                confirm_with=FakeTranslator(
+                    ChunkAnnotation(segments=[seg(1, "dialogue", "ริโก้ราดกา")])
+                ),
+            )
+        )
+        self.assertEqual(chap.paragraphs[0].speaker, "ริโก้")
+        self.assertEqual(result["disagreements"], [], "an alias was treated as a different speaker")
+
+    def test_without_a_second_model_nothing_is_gated(self):
+        chap, k = chapter(1), knowledge_with("ริโก้")
+        result = asyncio.run(
+            annotate_chapter(chap, k, FakeTranslator(ChunkAnnotation(segments=[seg(1)])))
+        )
+        self.assertEqual(chap.paragraphs[0].speaker, "ริโก้")
+        self.assertEqual(result["disagreements"], [])
+
+
 class TestRegistryFailureModes(unittest.TestCase):
     """The three failures the prototype found only appear across many chapters."""
 

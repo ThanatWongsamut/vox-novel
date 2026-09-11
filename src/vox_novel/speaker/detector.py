@@ -164,17 +164,91 @@ def _apply(
     return applied
 
 
+def _agreement_gate(
+    primary: List[Segment], secondary: List[Segment]
+) -> Tuple[Dict[int, Segment], List[Dict[str, Any]]]:
+    """Keep only attributions two models agree on; report the rest.
+
+    A wrong character voice is worse for a listener than no character voice at
+    all -- the narrator reading everything is at least consistent, while a voice
+    that switches mid-conversation is obviously broken. So an uncertain line
+    falls back to narration, which sounds exactly as it does today.
+
+    Confidence cannot drive this: models report 1.0 while wrong. Agreement
+    between two independent runs can.
+    """
+    other = {s.paragraph: s for s in secondary}
+    kept: Dict[int, Segment] = {}
+    disagreements: List[Dict[str, Any]] = []
+
+    for seg in primary:
+        rival = other.get(seg.paragraph)
+        if rival is None:
+            # The second model said nothing about this paragraph; treat silence
+            # as disagreement rather than assent.
+            disagreements.append(
+                {"paragraph": seg.paragraph, "primary": seg.speaker, "secondary": None}
+            )
+            continue
+
+        same_type = seg.type == rival.type
+        same_speaker = (seg.speaker or "") == (rival.speaker or "")
+        if same_type and same_speaker:
+            kept[seg.paragraph] = seg
+        else:
+            disagreements.append(
+                {
+                    "paragraph": seg.paragraph,
+                    "primary": f"{seg.type}/{seg.speaker}",
+                    "secondary": f"{rival.type}/{rival.speaker}",
+                }
+            )
+    return kept, disagreements
+
+
+async def _annotate_pass(
+    indexed: List[Tuple[int, str]],
+    knowledge: SeriesKnowledge,
+    translator,
+    chapter_id: str,
+    progress_callback=None,
+    label: str = "",
+) -> List[Segment]:
+    """One full annotation pass over a chapter, including the repair pass."""
+    chunks = make_chunks(indexed, chunk_size=CHUNK_SIZE, context_size=CONTEXT_SIZE)
+    segments: List[Segment] = []
+
+    for n, chunk in enumerate(chunks, start=1):
+        if progress_callback:
+            await _report(progress_callback, n, len(chunks), label)
+        segments.extend(await _annotate_chunk(chunk, knowledge, translator, chapter_id))
+
+    # A model that skipped paragraphs -- common near the end of a long chunk --
+    # gets one more pass over just the gaps before they fall back to narration.
+    seen = {s.paragraph for s in segments}
+    missing = [pair for pair in indexed if pair[0] not in seen]
+    if missing:
+        logger.info(f"Repairing {len(missing)} unannotated paragraph(s)...")
+        segments.extend(
+            await _annotate_chunk(Chunk(context=[], target=missing), knowledge, translator, chapter_id)
+        )
+    return segments
+
+
 async def annotate_chapter(
     chapter: Chapter,
     knowledge: SeriesKnowledge,
     translator,
     use_translated: bool = True,
     progress_callback=None,
+    confirm_with=None,
 ) -> Dict[str, Any]:
     """Attribute every paragraph of a chapter in place.
 
-    Returns a summary: counts per type, unresolved paragraphs, and low-confidence
-    attributions worth a human look.
+    confirm_with runs a second, independent annotation pass and keeps only the
+    attributions both agree on. The rest fall back to narration: at the accuracy
+    these models reach, a wrong character voice is worse than none, and an
+    unattributed line sounds exactly as it does today.
     """
     indexed: List[Tuple[int, str]] = [
         (p.index, _paragraph_text(p, use_translated))
@@ -182,26 +256,29 @@ async def annotate_chapter(
         if _paragraph_text(p, use_translated)
     ]
     if not indexed:
-        return {"annotated": 0, "missing": [], "low_confidence": []}
+        return {"annotated": 0, "missing": [], "low_confidence": [], "disagreements": []}
 
     by_index = {p.index: p for p in chapter.paragraphs}
-    chunks = make_chunks(indexed, chunk_size=CHUNK_SIZE, context_size=CONTEXT_SIZE)
-    all_segments: List[Segment] = []
+    all_segments = await _annotate_pass(
+        indexed, knowledge, translator, chapter.id, progress_callback,
+        label="Attributing" if confirm_with else "",
+    )
 
-    for n, chunk in enumerate(chunks, start=1):
-        if progress_callback:
-            await _report(progress_callback, n, len(chunks))
-        segments = await _annotate_chunk(chunk, knowledge, translator, chapter.id)
-        all_segments.extend(segments)
-
-    # A model that skipped paragraphs -- common near the end of a long chunk --
-    # gets one more pass over just the gaps before they fall back to narration.
-    annotated = {s.paragraph for s in all_segments}
-    missing = [pair for pair in indexed if pair[0] not in annotated]
-    if missing:
-        logger.info(f"Repairing {len(missing)} unannotated paragraph(s)...")
-        repair = Chunk(context=[], target=missing)
-        all_segments.extend(await _annotate_chunk(repair, knowledge, translator, chapter.id))
+    disagreements: List[Dict[str, Any]] = []
+    if confirm_with is not None:
+        second = await _annotate_pass(
+            indexed, knowledge, confirm_with, chapter.id, progress_callback,
+            label="Confirming",
+        )
+        _canonicalize(second, knowledge)
+        _canonicalize(all_segments, knowledge)
+        kept, disagreements = _agreement_gate(all_segments, second)
+        # A disagreement is not an error to drop silently -- the paragraph still
+        # needs a type, it just does not get a character voice.
+        for seg in all_segments:
+            if seg.paragraph not in kept:
+                seg.type = "narration"
+                seg.speaker = None
 
     _canonicalize(all_segments, knowledge)
     applied = _apply(all_segments, by_index, knowledge, chapter.id)
@@ -222,6 +299,7 @@ async def annotate_chapter(
             for s in all_segments
             if s.type != "narration" and s.confidence < 0.7
         ],
+        "disagreements": disagreements,
     }
 
 
@@ -261,9 +339,10 @@ async def _annotate_chunk(
     return [s for s in result.segments if s.paragraph in wanted]
 
 
-async def _report(progress_callback, n: int, total: int) -> None:
+async def _report(progress_callback, n: int, total: int, label: str = "") -> None:
     import inspect
 
-    result = progress_callback(int(n / max(total, 1) * 100), f"Attributing speakers ({n}/{total})...")
+    what = label or "Attributing speakers"
+    result = progress_callback(int(n / max(total, 1) * 100), f"{what} ({n}/{total})...")
     if inspect.isawaitable(result):
         await result

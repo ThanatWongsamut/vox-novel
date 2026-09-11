@@ -200,6 +200,7 @@ class NovelPipeline:
         chapter_id: str,
         extract_registry_first: bool = False,
         use_translated: bool = True,
+        confirm_model: Optional[str] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
     ) -> dict:
         """Attribute every paragraph of a chapter to a speaker.
@@ -232,10 +233,16 @@ class NovelPipeline:
                 chapter, knowledge, translator, use_translated=use_translated
             )
 
+        # A second model turns an uncertain attribution into narration rather than
+        # a wrong voice, which is the difference between a feature that degrades
+        # and one that actively sounds broken.
+        confirm_with = self.speaker_translator(model=confirm_model) if confirm_model else None
+
         result = await annotate_chapter(
             chapter, knowledge, translator,
             use_translated=use_translated,
             progress_callback=progress_callback,
+            confirm_with=confirm_with,
         )
 
         self.knowledge.save(knowledge)
@@ -254,7 +261,7 @@ class NovelPipeline:
             await result
 
     @staticmethod
-    def speaker_translator():
+    def speaker_translator(model: Optional[str] = None):
         """The translator used for speaker attribution.
 
         A local server needs no API key, so the presence of a base URL is enough
@@ -264,7 +271,7 @@ class NovelPipeline:
 
         if not os.getenv("OPENROUTER_API_KEY") and not os.getenv("OPENROUTER_BASE_URL"):
             return None
-        model = os.getenv("OPENROUTER_SPEAKER_MODEL") or os.getenv(
+        model = model or os.getenv("OPENROUTER_SPEAKER_MODEL") or os.getenv(
             "OPENROUTER_MODEL", "google/gemma-4-31b-it:free"
         )
         try:

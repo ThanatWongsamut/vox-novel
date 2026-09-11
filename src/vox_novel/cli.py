@@ -564,6 +564,10 @@ def detect_speakers_cmd(
     source: bool = typer.Option(
         False, "--source", help="Attribute the source text instead of the translation"
     ),
+    confirm_with: Optional[str] = typer.Option(
+        None, "--confirm-with",
+        help="Second model; keeps only attributions both agree on, rest read as narration",
+    ),
 ):
     """Attribute each paragraph of a chapter to a speaker.
 
@@ -606,6 +610,7 @@ def detect_speakers_cmd(
                     series_id=series_id, chapter_id=chapter_id,
                     extract_registry_first=extract,
                     use_translated=not source,
+                    confirm_model=confirm_with,
                     progress_callback=progress_cb,
                 )
             except Exception as e:
@@ -627,6 +632,16 @@ def detect_speakers_cmd(
             console.print(f"[yellow]Low confidence ({len(result['low_confidence'])}):[/yellow]")
             for item in result["low_confidence"][:10]:
                 console.print(f"  [{item['paragraph']}] {item['speaker']} ({item['confidence']:.2f})")
+        if confirm_with:
+            disagreed = result.get("disagreements", [])
+            total = result["annotated"] + len(disagreed)
+            rate = (result["annotated"] / total * 100) if total else 0
+            console.print(
+                f"[cyan]Two models agreed on {result['annotated']}/{total} "
+                f"paragraphs ({rate:.0f}%).[/cyan] The rest read as narration."
+            )
+            for d in disagreed[:10]:
+                console.print(f"  [{d['paragraph']}] {d['primary']}  vs  {d['secondary']}")
         if result.get("near_duplicates"):
             console.print("[yellow]Possible duplicate characters — review these:[/yellow]")
             for a, b in result["near_duplicates"][:10]:
