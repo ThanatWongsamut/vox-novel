@@ -35,6 +35,7 @@ class DummyTTS(BaseTTS):
         voice_description: Optional[str] = None,
         reference_audio: Optional[Path] = None,
         emotion: Optional[str] = None,
+        control_prompt: Optional[str] = None,
     ) -> Path:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         sample_rate = 24000
@@ -53,6 +54,7 @@ class DummyTTS(BaseTTS):
         reference_audio: Optional[Path] = None,
         knowledge: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, str], Any]] = None,
+        translator: Optional[Any] = None,
     ) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         final_file = output_dir / f"chapter_{chapter.id}.wav"

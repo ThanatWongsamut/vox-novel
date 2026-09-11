@@ -9,7 +9,9 @@ class Paragraph(BaseModel):
     text: str
     translated_text: Optional[str] = None
     audio_path: Optional[str] = None
-    speaker: Optional[str] = None  # e.g. "narrator" or character name
+    # e.g. "narrator" or a character name. Not populated yet -- the TTS engine's
+    # per-character voice path reads it and stays inert until something does.
+    speaker: Optional[str] = None
     emotion: Optional[str] = None  # e.g. "calm", "angry", "fearful", "whisper", "urgent"
     speech_type: Optional[str] = None  # "narration" or "dialogue"
 

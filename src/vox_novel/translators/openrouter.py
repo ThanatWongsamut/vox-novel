@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Dict, List, Optional, Tuple
@@ -15,11 +16,13 @@ from vox_novel.translators.prompts import (
     EXTRACTION_SYSTEM_PROMPT,
 )
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 
 class OpenRouterTranslator(BaseTranslator):
-    """Translation engine using OpenRouter API supporting models like minimax/minimax-m3:free."""
+    """Translation engine using OpenRouter API supporting models like google/gemma-4-31b-it:free."""
 
     DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -32,7 +35,7 @@ class OpenRouterTranslator(BaseTranslator):
         timeout: float = 120.0,
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        self.model_name = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+        self.model_name = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
         
         if fallback_models is not None:
             self.fallback_models = fallback_models
@@ -40,9 +43,10 @@ class OpenRouterTranslator(BaseTranslator):
             env_fallbacks = os.getenv("OPENROUTER_FALLBACK_MODELS")
             if env_fallbacks:
                 self.fallback_models = [m.strip() for m in env_fallbacks.split(",") if m.strip()]
-            elif "minimax" in self.model_name:
-                self.fallback_models = ["minimax/minimax-m2.7:free"]
             else:
+                # No hardcoded fallback. Free variants get withdrawn -- the previous
+                # default here pointed at one that no longer exists, so a failure
+                # retried against a 404. Set OPENROUTER_FALLBACK_MODELS to opt in.
                 self.fallback_models = []
 
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
@@ -85,6 +89,7 @@ class OpenRouterTranslator(BaseTranslator):
         response_format: Optional[dict] = None,
         status_callback: Optional[callable] = None,
         max_retries: int = 4,
+        max_tokens: Optional[int] = None,
     ) -> str:
         headers = self._get_headers()
         payload = {
@@ -92,6 +97,10 @@ class OpenRouterTranslator(BaseTranslator):
             "messages": messages,
             "temperature": temperature,
         }
+        # Without this OpenRouter reserves the model's whole context window, which a
+        # low-balance account cannot afford even for a one-line answer.
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         # Enable OpenRouter native model fallbacks
         models_chain = [self.model_name]
@@ -246,6 +255,20 @@ class OpenRouterTranslator(BaseTranslator):
         cleaned = re.sub(r"^\s*\[\d+\]\s*", "", res.strip()).strip()
         return cleaned
 
+    # A one-off completion is a short answer, not a chapter.
+    COMPLETION_MAX_TOKENS = 256
+
+    async def complete(self, system_prompt: str, user_prompt: str) -> str:
+        return (
+            await self._call_chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=self.COMPLETION_MAX_TOKENS,
+            )
+        ).strip()
+
     @staticmethod
     def _is_punctuation_or_pause(text: str) -> bool:
         clean = text.strip()
@@ -379,6 +402,7 @@ class OpenRouterTranslator(BaseTranslator):
         # Filter out lonely punctuation lines
         to_polish = [p for p in paragraphs if not self._is_punctuation_or_pause(p.text) and p.translated_text]
         total_batches = (len(to_polish) + batch_size - 1) // batch_size if to_polish else 1
+        failed_batches = 0
 
         for batch_idx, i in enumerate(range(0, len(to_polish), batch_size), start=1):
             chunk = to_polish[i : i + batch_size]
@@ -422,15 +446,29 @@ class OpenRouterTranslator(BaseTranslator):
                     for p in chunk:
                         if p.index == p_idx and len(polished_text) > 3:
                             p.translated_text = self._clean_translated_text(polished_text, p.text)
-            except Exception:
-                # If editor pass fails for any reason, keep the solid draft
-                pass
+            except Exception as e:
+                # Keep the solid draft, but say so: a mistyped
+                # OPENROUTER_POLISH_MODEL fails every batch, and silence here
+                # looked identical to a successful polish.
+                failed_batches += 1
+                logger.warning(
+                    f"Editor pass failed on batch {batch_idx}/{total_batches} "
+                    f"({self.model_name}), keeping the draft: {e}"
+                )
 
             if batch_idx < total_batches:
                 await asyncio.sleep(1.2)
 
         if progress_callback:
-            msg = "Agentic polishing complete! Finalizing and saving..."
+            if failed_batches == total_batches and total_batches:
+                msg = (
+                    f"Editor pass could not run ({self.model_name}); "
+                    "keeping the draft translation."
+                )
+            elif failed_batches:
+                msg = f"Agentic polishing finished with {failed_batches} batch(es) skipped."
+            else:
+                msg = "Agentic polishing complete! Finalizing and saving..."
             if asyncio.iscoroutinefunction(progress_callback):
                 await progress_callback(95, msg)
             else:

@@ -17,6 +17,17 @@ class BaseTranslator(ABC):
         """Translate a single block of text."""
         pass
 
+    async def complete(self, system_prompt: str, user_prompt: str) -> str:
+        """Run a one-off instruction against the backing model.
+
+        Translators are this project's gateway to an LLM, so callers that need a
+        short completion for something other than novel text (deriving a TTS voice
+        control prompt, say) can reuse the configured backend instead of wiring up
+        their own client. Backends without a chat endpoint leave this unsupported;
+        callers are expected to have a non-LLM fallback.
+        """
+        raise NotImplementedError(f"{self.name} does not support one-off completions")
+
     @abstractmethod
     async def translate_paragraphs(
         self,

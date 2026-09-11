@@ -188,7 +188,8 @@ def chapter(
         "openrouter", "--translator", help="Translator backend: 'openrouter', 'gemini', or 'dummy'"
     ),
     model: str = typer.Option(
-        "minimax/minimax-m3:free", "--model", "-m", help="Model name (e.g. minimax/minimax-m3:free, z-ai/glm-5.2:free)"
+        "google/gemma-4-31b-it:free", "--model", "-m",
+        help="Model name (e.g. google/gemma-4-31b-it:free, deepseek/deepseek-v4-flash)"
     ),
     auto_learn: bool = typer.Option(
         True, "--auto-learn/--no-auto-learn", help="Automatically learn new terms/characters per series"
@@ -407,9 +408,8 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
     translator_choice = questionary.select(
         f"Translate '{selected_chapter.title}' using:",
         choices=[
-            "OpenRouter (minimax/minimax-m3:free) [Recommended]",
-            "OpenRouter (z-ai/glm-5.2:free)",
-            "OpenRouter (google/gemma-4-31b-it:free)",
+            "OpenRouter (google/gemma-4-31b-it:free) [Free]",
+            "OpenRouter (deepseek/deepseek-v4-flash) [Recommended, paid]",
             "Google Gemini (gemini-2.5-flash)",
             "Dummy / Mock (Instant test)",
         ],
@@ -419,16 +419,16 @@ def _execute_translation(pipeline, storage, novel, selected_chapter, target_lang
         return
 
     translator_name = "openrouter"
-    model_name = "minimax/minimax-m3:free"
+    model_name = "google/gemma-4-31b-it:free"
 
     if "Dummy" in translator_choice:
         translator_name = "dummy"
     elif "Gemini" in translator_choice:
         translator_name = "gemini"
         model_name = "gemini-2.5-flash"
-    elif "glm-5.2" in translator_choice:
-        model_name = "z-ai/glm-5.2:free"
-    if "gemma-4-31b" in translator_choice:
+    elif "deepseek-v4-flash" in translator_choice:
+        model_name = "deepseek/deepseek-v4-flash"
+    elif "gemma-4-31b" in translator_choice:
         model_name = "google/gemma-4-31b-it:free"
 
     agentic_mode = True

@@ -21,6 +21,10 @@ class CharacterProfile(BaseModel):
     notes: Optional[str] = None
     voice_description: Optional[str] = None  # Text prompt for Voice Design
     voice_ref_audio: Optional[str] = None    # Path to saved reference audio clip
+    # English control prompt derived from voice_description. VoxCPM2 only acts on
+    # English, so this is derived once (LLM when available, keyword table otherwise)
+    # and reused for every paragraph rather than recomputed per synthesis.
+    voice_control_prompt: Optional[str] = None
 
 
 class SeriesKnowledge(BaseModel):
@@ -35,6 +39,7 @@ class SeriesKnowledge(BaseModel):
         "เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
     )
     narrator_voice_ref_audio: Optional[str] = None
+    narrator_voice_control_prompt: Optional[str] = None
     style_guidelines: List[str] = Field(default_factory=list)
     custom_system_prompt: Optional[str] = None
     last_updated: datetime = Field(default_factory=datetime.utcnow)
@@ -84,12 +89,18 @@ class SeriesKnowledge(BaseModel):
         self,
         voice_description: Optional[str] = None,
         voice_ref_audio: Optional[str] = None,
+        voice_control_prompt: Optional[str] = None,
     ):
         """Update narrator voice prompt and/or reference audio anchor."""
         if voice_description is not None:
             self.narrator_voice_description = voice_description
+            # The cached English control no longer describes the new text; an
+            # explicit control in this same call overrides that below.
+            self.narrator_voice_control_prompt = None
         if voice_ref_audio is not None:
             self.narrator_voice_ref_audio = voice_ref_audio
+        if voice_control_prompt is not None:
+            self.narrator_voice_control_prompt = voice_control_prompt
         self.last_updated = datetime.utcnow()
 
     def update_character_voice(
@@ -97,6 +108,7 @@ class SeriesKnowledge(BaseModel):
         name_en: str,
         voice_description: Optional[str] = None,
         voice_ref_audio: Optional[str] = None,
+        voice_control_prompt: Optional[str] = None,
     ) -> bool:
         """Update character voice prompt and/or reference audio anchor."""
         char = self.find_character(name_en)
@@ -104,8 +116,12 @@ class SeriesKnowledge(BaseModel):
             return False
         if voice_description is not None:
             char.voice_description = voice_description
+            # The cached English control no longer describes the new text.
+            char.voice_control_prompt = None
         if voice_ref_audio is not None:
             char.voice_ref_audio = voice_ref_audio
+        if voice_control_prompt is not None:
+            char.voice_control_prompt = voice_control_prompt
         self.last_updated = datetime.utcnow()
         return True
 
@@ -141,6 +157,9 @@ class SeriesKnowledge(BaseModel):
                 existing.notes = notes
             if voice_description and not existing.voice_description:
                 existing.voice_description = voice_description
+                # A control prompt derived from an older description no longer
+                # describes this voice; drop it so it is re-derived.
+                existing.voice_control_prompt = None
             if voice_ref_audio and not existing.voice_ref_audio:
                 existing.voice_ref_audio = voice_ref_audio
             self.last_updated = datetime.utcnow()
@@ -155,8 +174,11 @@ class SeriesKnowledge(BaseModel):
                 char.role = role
             if notes:
                 char.notes = notes
-            if voice_description:
+            if voice_description and voice_description.strip() != (char.voice_description or "").strip():
                 char.voice_description = voice_description
+                # Same invalidation as update_character_voice -- the glossary edit
+                # modal reaches this path, not that one.
+                char.voice_control_prompt = None
             if voice_ref_audio:
                 char.voice_ref_audio = voice_ref_audio
             for a in alias_list:

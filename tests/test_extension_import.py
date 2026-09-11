@@ -11,6 +11,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.tts.voxcpm import VoxCPM2TTS
 from vox_novel.web import app as web
 
@@ -197,7 +198,9 @@ class TestSynthesisJob(ExtensionApiTestCase):
 
         # Patch before the request: the job starts synthesizing immediately, and
         # real weights would otherwise run full inference here.
+        # No weights, no remote TTS, and no LLM: the suite must not touch the network.
         with mock.patch.object(VoxCPM2TTS, "_get_local_model", return_value=None), \
+             mock.patch.object(NovelPipeline, "voice_prompt_translator", staticmethod(lambda: None)), \
              mock.patch.dict(os.environ, {"VOXCPM_API_URL": ""}, clear=False):
             res = self.client.post(
                 "/api/synthesize-chapter",
@@ -222,6 +225,87 @@ class TestSynthesisJob(ExtensionApiTestCase):
             data={"series_id": "../evil", "chapter_id": "170"},
         )
         self.assertEqual(res.status_code, 400)
+
+
+class TestVoicePromptValidation(ExtensionApiTestCase):
+    def test_invalid_voice_type_is_a_client_error(self):
+        # Previously fell through to an UnboundLocalError on `char` -> HTTP 500.
+        res = self.client.post(
+            "/api/voices/update-prompt",
+            json={"series_id": "series-a", "voice_type": "bogus", "voice_description": "x"},
+        )
+        self.assertEqual(res.status_code, 400, res.text)
+
+    def test_missing_voice_type_is_a_client_error(self):
+        res = self.client.post(
+            "/api/voices/update-prompt", json={"series_id": "series-a"}
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_character_without_a_name_is_a_client_error(self):
+        res = self.client.post(
+            "/api/voices/update-prompt",
+            json={"series_id": "series-a", "voice_type": "character"},
+        )
+        self.assertEqual(res.status_code, 400)
+
+
+class TestVoicePromptPersistence(ExtensionApiTestCase):
+    """The description and its derived control prompt must land in one write.
+
+    update_narrator_voice clears the cached control whenever the description
+    changes, so writing them separately relies on ordering that is easy to break.
+    """
+
+    class FailingTranslator:
+        async def complete(self, *a, **k):
+            raise RuntimeError("LLM down")
+
+    def knowledge(self, series="s1"):
+        return json.loads((self.tmp / series / "knowledge_th.json").read_text(encoding="utf-8"))
+
+    def test_description_and_control_are_both_persisted(self):
+        from vox_novel.pipeline.manager import NovelPipeline
+
+        # No translator: the keyword table fills in, and the suite stays offline.
+        with mock.patch.object(
+            NovelPipeline, "voice_prompt_translator", staticmethod(lambda: None)
+        ):
+            res = self.client.post(
+            "/api/voices/update-prompt",
+                json={
+                    "series_id": "s1",
+                    "voice_type": "narrator",
+                    "voice_description": "เสียงหวานใส ร่าเริง",
+                },
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        k = self.knowledge()
+        self.assertEqual(k["narrator_voice_description"], "เสียงหวานใส ร่าเริง")
+        self.assertTrue(
+            k["narrator_voice_control_prompt"],
+            "the control prompt must survive the description write",
+        )
+
+    def test_llm_failure_still_saves_both(self):
+        from vox_novel.pipeline.manager import NovelPipeline
+
+        with mock.patch.object(
+            NovelPipeline, "voice_prompt_translator",
+            staticmethod(lambda: self.FailingTranslator()),
+        ):
+            res = self.client.post(
+                "/api/voices/update-prompt",
+                json={
+                    "series_id": "s1",
+                    "voice_type": "narrator",
+                    "voice_description": "เสียงหวานใส ร่าเริง",
+                },
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        k = self.knowledge()
+        self.assertTrue(k["narrator_voice_description"])
+        self.assertTrue(k["narrator_voice_control_prompt"], "keyword table should fill in")
 
 
 class TestCorsPolicy(ExtensionApiTestCase):

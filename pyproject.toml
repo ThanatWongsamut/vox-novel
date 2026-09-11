@@ -27,7 +27,9 @@ dependencies = [
 # VoxCPM weights pull in torch; the TTS engine falls back to a remote API or a
 # placeholder tone when this extra is not installed.
 tts = [
-    "voxcpm>=2.0.3",
+    # Pinned: VoxCPM2TTS patches VoxCPM2Model._inference with a copy of this
+    # version's implementation. See VoxCPM2TTS.PATCHED_VOXCPM_VERSION.
+    "voxcpm==2.0.3",
 ]
 
 [build-system]

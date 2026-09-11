@@ -49,7 +49,7 @@ class NovelPipeline:
         if chapter.source_language == target_lang:
             return [], [], series_knowledge
 
-        chosen_model = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+        chosen_model = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
         translator = translator_registry.get_translator(translator_name, model=chosen_model)
         if isinstance(translator, OpenRouterTranslator):
             new_terms, new_chars = await translator.detect_new_entities_for_review(
@@ -116,7 +116,13 @@ class NovelPipeline:
 
                 # Agentic Critic/Editor Step: Polishes draft for natural Thai flow & strict glossary alignment
                 if agentic_mode:
-                    chapter.paragraphs = await translator.polish_paragraphs_agent(
+                    # The editor pass sees both the draft and the English original, so
+                    # it can repair meaning as well as phrasing -- it is where a
+                    # stronger model earns its cost. It also batches 25 paragraphs to
+                    # the draft's 15, so running the better model only here is cheaper
+                    # than running it only on the draft.
+                    polish_translator = self._polish_translator(translator, translator_name, kwargs)
+                    chapter.paragraphs = await polish_translator.polish_paragraphs_agent(
                         chapter.paragraphs,
                         target_lang=target_lang,
                         knowledge=series_knowledge,
@@ -151,8 +157,9 @@ class NovelPipeline:
         if not chapter:
             raise ValueError(f"Chapter '{chapter_id}' not found in series '{series_id}'")
 
-        knowledge = self.knowledge.load_or_init(series_id)
-        narrator_desc = voice_description or knowledge.narrator_voice_description
+        knowledge = self.knowledge.load_or_init(
+            series_id, target_lang=chapter.target_language or "th"
+        )
         ref_audio = reference_audio or (
             Path(knowledge.narrator_voice_ref_audio)
             if knowledge.narrator_voice_ref_audio and Path(knowledge.narrator_voice_ref_audio).exists()
@@ -167,12 +174,105 @@ class NovelPipeline:
             chapter=chapter,
             output_dir=output_dir,
             use_translated=True,
-            voice_description=narrator_desc,
+            # Pass the per-chapter override as-is. synthesize_chapter falls back to
+            # knowledge on its own; collapsing the two here would make every call
+            # indistinguishable from an override and defeat the prompt cache.
+            voice_description=voice_description,
             reference_audio=ref_audio,
             knowledge=knowledge,
             progress_callback=progress_callback,
+            translator=self.voice_prompt_translator(),
         )
 
+        # synthesize_chapter caches the control prompts it derived; persist only
+        # those fields. A full save would overwrite any glossary or voice edit made
+        # while this multi-minute job was running.
+        self._persist_derived_control_prompts(
+            series_id, knowledge, overridden=bool(voice_description)
+        )
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path
+
+    def _persist_derived_control_prompts(self, series_id: str, knowledge, overridden: bool) -> None:
+        """Backfill control prompts for a series no endpoint has derived one for.
+
+        The Voice Studio endpoints derive at save time, so synthesis only needs to
+        fill a gap -- never to overwrite. A prompt is written back only into an
+        empty field AND only when the description it was derived from still matches
+        what is stored, so an edit made during this multi-minute job is left alone
+        while an unrelated write elsewhere in the glossary does not suppress the
+        backfill. A per-chapter override writes nothing at all.
+        """
+        if overridden:
+            return
+        fresh = self.knowledge.load_or_init(series_id, target_lang=knowledge.target_language)
+
+        def _same_description(stored: Optional[str], used: Optional[str]) -> bool:
+            # A description change clears the cached prompt rather than replacing
+            # it, so an empty field can mean either "never derived" or "just
+            # edited". Comparing the description this job derived from tells them
+            # apart -- and unlike a whole-file timestamp, an unrelated glossary
+            # write during the job does not suppress the backfill.
+            return (stored or "").strip() == (used or "").strip()
+
+        dirty = False
+        if (
+            knowledge.narrator_voice_control_prompt
+            and not fresh.narrator_voice_control_prompt
+            and _same_description(
+                fresh.narrator_voice_description, knowledge.narrator_voice_description
+            )
+        ):
+            fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
+            dirty = True
+        for char in knowledge.characters.values():
+            target = fresh.find_character(char.name_en)
+            if (
+                target is not None
+                and char.voice_control_prompt
+                and not target.voice_control_prompt
+                and _same_description(target.voice_description, char.voice_description)
+            ):
+                target.voice_control_prompt = char.voice_control_prompt
+                dirty = True
+        if dirty:
+            self.knowledge.save(fresh)
+
+    @staticmethod
+    def _polish_translator(draft_translator, translator_name: str, kwargs: dict):
+        """Return the translator to use for the editor pass.
+
+        OPENROUTER_POLISH_MODEL lets the editor pass run on a different (usually
+        stronger) model than the draft. Unset, the draft translator is reused, so
+        behaviour is unchanged.
+        """
+        import os
+
+        polish_model = os.getenv("OPENROUTER_POLISH_MODEL", "").strip()
+        if not polish_model or polish_model == getattr(draft_translator, "model_name", None):
+            return draft_translator
+        try:
+            return translator_registry.get_translator(
+                translator_name, **{**kwargs, "model": polish_model}
+            )
+        except Exception:
+            return draft_translator
+
+    @staticmethod
+    def voice_prompt_translator():
+        """The translator used to turn voice descriptions into English control prompts.
+
+        Returns None when no LLM is configured, which leaves voice design on the
+        offline keyword table.
+        """
+        import os
+
+        if not os.getenv("OPENROUTER_API_KEY"):
+            return None
+        try:
+            return translator_registry.get_translator(
+                "openrouter", model=os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+            )
+        except Exception:
+            return None

@@ -475,7 +475,7 @@ async def translate_chapter(
 ):
     series_id = safe_id(series_id, "series_id")
     agentic_mode = agentic.lower() in ("true", "1", "yes", "on")
-    chosen_model = model or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    chosen_model = model or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     translator_name = "openrouter" if os.getenv("OPENROUTER_API_KEY") else "dummy"
 
     # Start background job immediately so user gets live SSE progress from second 0
@@ -591,7 +591,7 @@ async def confirm_translation(request: Request):
     form_data = await request.form()
     series_id = form_data.get("series_id")
     chapter_url = form_data.get("chapter_url")
-    model = form_data.get("model") or os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+    model = form_data.get("model") or os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     target_lang = form_data.get("target_lang", "th")
     agentic_val = form_data.get("agentic", "true")
     agentic_mode = str(agentic_val).lower() in ("true", "1", "yes", "on")
@@ -946,22 +946,46 @@ async def update_voice_prompt(request: Request):
 
     if not series_id or not voice_type:
         raise HTTPException(status_code=400, detail="Missing required parameters")
+    if voice_type not in ("narrator", "character"):
+        raise HTTPException(
+            status_code=400, detail="voice_type must be 'narrator' or 'character'"
+        )
 
     series_id = safe_id(series_id, "series_id")
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
-    if voice_type == "narrator":
-        knowledge.update_narrator_voice(voice_description=voice_description)
-    elif voice_type == "character":
+
+    char = None
+    if voice_type == "character":
         if not character_name:
             raise HTTPException(status_code=400, detail="character_name is required for character voice")
         # character_name may be an alias -- store against the canonical name.
         char = knowledge.find_character(character_name)
         if not char:
             raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
-        knowledge.update_character_voice(char.name_en, voice_description=voice_description)
+
+    # Derive the English control prompt now, while the user is waiting on a single
+    # save, rather than during synthesis where it would delay the whole chapter.
+    # Resolve it before writing, so the description and its control land together.
+    from vox_novel.tts.voxcpm import VoxCPM2TTS
+
+    control = await VoxCPM2TTS.derive_control_prompt(
+        voice_description, translator=pipeline.voice_prompt_translator()
+    )
+    if voice_type == "narrator":
+        knowledge.update_narrator_voice(
+            voice_description=voice_description, voice_control_prompt=control
+        )
+    else:
+        knowledge.update_character_voice(
+            char.name_en, voice_description=voice_description, voice_control_prompt=control
+        )
 
     knowledge_mgr.save(knowledge)
-    return {"status": "ok", "message": "Voice prompt updated successfully"}
+    return {
+        "status": "ok",
+        "message": "Voice prompt updated successfully",
+        "control_prompt": control,
+    }
 
 
 @web_app.post("/api/voices/generate")
@@ -994,21 +1018,27 @@ async def generate_voice_sample(request: Request):
         )
         text = sample_text or "ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย"
         out_file = voices_dir / "narrator_ref.wav"
+        control = await tts.derive_control_prompt(
+            effective_desc, translator=pipeline.voice_prompt_translator()
+        )
         await tts.synthesize(
             text=text,
             output_file=out_file,
             voice_description=effective_desc,
             reference_audio=None,
+            control_prompt=control,
         )
         knowledge.update_narrator_voice(
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
+            voice_control_prompt=control,
         )
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
             "audio_url": f"/api/voices/{series_id}/narrator",
             "voice_description": effective_desc,
+            "control_prompt": control,
         }
     else:
         if not character_name:
@@ -1026,22 +1056,28 @@ async def generate_voice_sample(request: Request):
         effective_desc = voice_description or char.voice_description or default_char_desc
         text = sample_text or f"สวัสดี ข้าชื่อ{char.name_target} ยินดีที่ได้รู้จัก"
         out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
+        control = await tts.derive_control_prompt(
+            effective_desc, translator=pipeline.voice_prompt_translator()
+        )
         await tts.synthesize(
             text=text,
             output_file=out_file,
             voice_description=effective_desc,
             reference_audio=None,
+            control_prompt=control,
         )
         knowledge.update_character_voice(
             char.name_en,
             voice_description=effective_desc,
             voice_ref_audio=str(out_file),
+            voice_control_prompt=control,
         )
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
             "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}",
             "voice_description": effective_desc,
+            "control_prompt": control,
         }
 
 
