@@ -13,9 +13,21 @@ Measured on chapter 164, 30 hand-labelled quote lines, RTX 3090:
 
 | model | full pipeline | curated registry |
 | --- | --- | --- |
-| qwen3:14b | 87% | **100%** |
+| qwen3:14b | 87% | 100% |
 | typhoon2.5-qwen3-30b | 83% | 97% |
 | qwen3:8b | 73% | 80% |
+
+**Read the absolute numbers with care.** Those figures come from a single
+unrepeated run of n=30 on the chapter the prompt was tuned against, and the
+curated registry was written *after* observing the errors -- it tells the model
+outright that one character is "asleep throughout this chapter, do not identify
+her as the speaker of any dialogue" and that four others are "only mentioned".
+Five of its ten entries carry an instruction of that shape. So 100% describes a
+ceiling on a burned evaluation set, not what to expect on unseen text. Chapter
+164 cannot be used to measure generalisation by either implementation.
+
+What survives is the *gap*, which is implementation-independent. See the
+measurements section below.
 
 Three findings shape everything below.
 
@@ -151,6 +163,43 @@ Added to `translators/openrouter.py`: a `structured()` method alongside
 Steps 1–4 are independently testable without touching synthesis. Step 7 is where
 audio changes.
 
+## Measured after steps 1-5
+
+Same gold set, same model (qwen3:14b on a local Ollama), scored the same way:
+
+| arm | prototype | this port |
+| --- | --- | --- |
+| auto-built registry | 87% | 70% |
+| curated registry | 100% | 83% |
+| **delta** | **+13** | **+13** |
+
+The delta reproduces exactly, on a different implementation, and for the same
+reason: auto-extraction flagged no narrator, and six of eight errors were the
+narrator's lines going to the most prominent character present. That is the
+durable finding and it is what justifies step 6.
+
+The absolute numbers are not comparable. The prototype's curated run passed the
+chapter-specific "does not speak here" hints to the model; this port's 83% run
+did not pass character descriptions at all, so it is the cleaner measurement of
+the two. Adding descriptions afterwards gave 80% -- within noise.
+
+Two hypotheses were tested and rejected, both by measurement:
+
+| change | result |
+| --- | --- |
+| echo each paragraph's text verbatim, as the prototype does | 77%, and 74% slower |
+| send character descriptions in the registry block | 80% |
+
+Three runs of one configuration gave 83 / 77 / 80, so roughly +/-3 points is
+noise at n=30 and neither change is distinguishable from it. Dropping the text
+echo was therefore right on both accuracy and its 41% output-cost saving.
+
+Runtime: ~2.5 minutes per 232-paragraph chapter, full coverage, no gaps.
+
+**No number here measures generalisation.** Both implementations' prompts derive
+from one tuned on this chapter. A held-out set -- ideally a chapter of the
+series actually being produced -- is needed before trusting an absolute figure.
+
 ## Risks
 
 **Attribution quality depends on a registry we do not curate.** VoxNovel builds
@@ -175,8 +224,14 @@ off-by-one here misattributes every voice in the chapter. The prototype is
 
 ## Open questions
 
-1. Is a curated-registry workflow acceptable, or must this be fully automatic?
-   The benchmark gap is 87% vs 100%.
+1. At ~80%, roughly one dialogue line in five gets the wrong voice -- which is
+   worse for a listener than no per-character voices at all, since the narrator
+   reading everything is at least consistent. Three ways to make that shippable,
+   not mutually exclusive: review before synthesis (step 6); raise accuracy; or
+   fail toward the narrator, so an uncertain line sounds exactly as it does
+   today instead of wrong. Confidence cannot drive the third -- models report 1.0
+   while wrong -- but agreement between two models can, and a second local model
+   costs only time.
 2. `thought` — keep as a third type, or collapse to `dialogue`?
 3. Run speaker detection automatically after translation, or on demand like
    synthesis?

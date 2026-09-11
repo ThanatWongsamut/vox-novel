@@ -59,6 +59,10 @@ def _scoped_registry(knowledge: SeriesKnowledge, chapters_seen: int) -> List[Dic
             "aliases": c.aliases,
             "gender": c.gender or "unknown",
             "speech_style": c.speech_style or "",
+            # Who this character is. Dropping it measurably hurt attribution on
+            # untagged reactive lines, where role is the only way to judge which
+            # of two same-register speakers would plausibly say something.
+            "description": c.notes or c.role or "",
             "is_narrator": c.is_narrator,
         }
         for c in characters
