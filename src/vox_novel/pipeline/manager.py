@@ -157,7 +157,9 @@ class NovelPipeline:
         if not chapter:
             raise ValueError(f"Chapter '{chapter_id}' not found in series '{series_id}'")
 
-        knowledge = self.knowledge.load_or_init(series_id)
+        knowledge = self.knowledge.load_or_init(
+            series_id, target_lang=chapter.target_language or "th"
+        )
         ref_audio = reference_audio or (
             Path(knowledge.narrator_voice_ref_audio)
             if knowledge.narrator_voice_ref_audio and Path(knowledge.narrator_voice_ref_audio).exists()
@@ -185,43 +187,40 @@ class NovelPipeline:
         # synthesize_chapter caches the control prompts it derived; persist only
         # those fields. A full save would overwrite any glossary or voice edit made
         # while this multi-minute job was running.
-        self._persist_derived_control_prompts(series_id, knowledge)
+        self._persist_derived_control_prompts(
+            series_id, knowledge, overridden=bool(voice_description)
+        )
         chapter.audio_path = str(audio_path)
         self.storage.save_chapter(chapter)
         return audio_path
 
-    def _persist_derived_control_prompts(self, series_id: str, knowledge) -> None:
-        """Write back only the control prompts derived during synthesis.
+    def _persist_derived_control_prompts(self, series_id: str, knowledge, overridden: bool) -> None:
+        """Backfill control prompts for a series no endpoint has derived one for.
 
-        Synthesis runs for minutes, so the in-memory knowledge object is stale by
-        the time it finishes. Saving it wholesale would discard any glossary or
-        voice edit made meanwhile; and a prompt whose description has since been
-        edited must not be restored either, since that recreates the description /
-        prompt mismatch the invalidation in SeriesKnowledge exists to prevent.
+        The Voice Studio endpoints derive at save time, so synthesis only needs to
+        fill a gap -- never to overwrite. Writing only into empty fields removes the
+        need to track which description each prompt came from: an edit made during
+        this multi-minute job is simply left alone, and a per-chapter override is
+        never mistaken for the series voice.
         """
-        def _current(stored: Optional[str], derived_from: Optional[str]) -> bool:
-            # A prompt belongs to the stored description only if it was derived from
-            # exactly that text. This rejects both a mid-job edit and a per-chapter
-            # `voice` override, which would otherwise be written back as the series
-            # voice and cement a description/prompt mismatch.
-            return (stored or "").strip() == (derived_from or "").strip()
-
-        fresh = self.knowledge.load_or_init(series_id)
-        if knowledge.narrator_voice_control_prompt and _current(
-            fresh.narrator_voice_description, knowledge.narrator_voice_control_source
-        ):
+        if overridden:
+            return
+        fresh = self.knowledge.load_or_init(series_id, target_lang=knowledge.target_language)
+        dirty = False
+        if knowledge.narrator_voice_control_prompt and not fresh.narrator_voice_control_prompt:
             fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
-            fresh.narrator_voice_control_source = knowledge.narrator_voice_control_source
+            dirty = True
         for char in knowledge.characters.values():
             target = fresh.find_character(char.name_en)
-            if (
-                target is not None
-                and char.voice_control_prompt
-                and _current(target.voice_description, char.voice_control_source)
-            ):
+            if target is not None and char.voice_control_prompt and not target.voice_control_prompt:
                 target.voice_control_prompt = char.voice_control_prompt
-                target.voice_control_source = char.voice_control_source
-        self.knowledge.save(fresh)
+                dirty = True
+        if knowledge.narrator_voice_ref_audio and not fresh.narrator_voice_ref_audio:
+            # Adoption of a legacy anchor.
+            fresh.narrator_voice_ref_audio = knowledge.narrator_voice_ref_audio
+            dirty = True
+        if dirty:
+            self.knowledge.save(fresh)
 
     @staticmethod
     def _polish_translator(draft_translator, translator_name: str, kwargs: dict):

@@ -64,7 +64,7 @@ class AnchorTestCase(unittest.TestCase):
             # The anchor is written to a staging file and renamed into place, so
             # normalize it back to the name callers reason about.
             if name.startswith("narrator_ref"):
-                name = "narrator_ref.wav"
+                name = "narrator_ref.wav"   # content-addressed; normalize for assertions
             calls.append((name, kwargs.get("control_prompt")))
             return await original(**kwargs)
 
@@ -185,9 +185,12 @@ class TestAnchorStaleness(AnchorTestCase):
         )
         self.assertEqual(supplied.read_bytes(), before, "an upload was regenerated")
 
-    def test_legacy_unstamped_anchor_can_be_rebuilt(self):
-        """A file written before stamping existed must not freeze the series voice
-        forever; knowledge holds no pointer to it, so it is ours to replace."""
+    def test_legacy_anchor_is_adopted_not_replaced(self):
+        """An install predating content-addressed anchors keeps the voice it has.
+
+        Re-voicing it silently would change how an in-progress audiobook sounds;
+        adopting it records the file as the series reference instead.
+        """
         from vox_novel.models.series_knowledge import SeriesKnowledge
 
         legacy = self.write_supplied_anchor()
@@ -203,8 +206,9 @@ class TestAnchorStaleness(AnchorTestCase):
                 translator=Translator("young girl narrator, sweet"),
             )
         )
-        self.assertNotEqual(
-            legacy.read_bytes(), before, "a legacy anchor stayed stale forever"
+        self.assertEqual(legacy.read_bytes(), before, "a legacy anchor was overwritten")
+        self.assertEqual(
+            k.narrator_voice_ref_audio, str(legacy), "the legacy file was not adopted"
         )
 
 
@@ -277,16 +281,35 @@ class TestControlPromptCaching(AnchorTestCase):
         self.assertEqual(len(calls), 1, "an override must be derived, not read from cache")
         self.assertIn("เด็กหญิง", calls[0])
 
-    def test_repeated_chapters_do_not_rebuild_the_anchor(self):
+    def anchors(self):
+        return sorted(f.name for f in self.voices.glob("narrator_ref.*.wav"))
+
+    def test_repeated_chapters_reuse_one_anchor(self):
         k = self.knowledge_with_cached_prompt()
         t, _ = self.counting_translator()
         engine = self.offline_engine()
+        for cid in ("1", "2", "3"):
+            self.synth(engine, k, t, cid=cid)
+        self.assertEqual(len(self.anchors()), 1, f"the voice drifted: {self.anchors()}")
+
+    def test_an_override_does_not_disturb_the_series_anchor(self):
+        """A one-off `--voice` run gets its own anchor; the series voice is untouched."""
+        k = self.knowledge_with_cached_prompt()
+        t, _ = self.counting_translator()
+        engine = self.offline_engine()
+
         self.synth(engine, k, t, cid="1")
-        anchor = self.voices / "narrator_ref.wav"
-        first = anchor.read_bytes()
-        self.synth(engine, k, t, cid="2")
+        series_anchor = self.anchors()[0]
+        series_bytes = (self.voices / series_anchor).read_bytes()
+
+        self.synth(engine, k, t, override="เด็กหญิง เสียงหวานใส", cid="2")
         self.synth(engine, k, t, cid="3")
-        self.assertEqual(anchor.read_bytes(), first, "the narrator voice drifted between chapters")
+
+        self.assertEqual(
+            (self.voices / series_anchor).read_bytes(),
+            series_bytes,
+            "the override re-rolled the series narrator",
+        )
 
 
 class TestAnchorArtifacts(AnchorTestCase):
@@ -335,7 +358,6 @@ class TestPipelineDoesNotDefeatTheCache(unittest.TestCase):
         k.update_narrator_voice(
             voice_description="เสียงชายแก่", voice_control_prompt="cached male narrator"
         )
-        k.narrator_voice_control_source = "เสียงชายแก่"
         self.km.save(k)
 
     def synthesize(self, voice=None):

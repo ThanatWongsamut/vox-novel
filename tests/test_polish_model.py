@@ -68,8 +68,14 @@ class TestPolishTranslatorSelection(unittest.TestCase):
             )
 
 
-class TestControlPromptMerge(unittest.TestCase):
-    """Synthesis runs for minutes; a voice edit made meanwhile must survive it."""
+class TestControlPromptBackfill(unittest.TestCase):
+    """Synthesis fills a gap; it never overwrites.
+
+    The Voice Studio endpoints derive a control prompt at save time, so synthesis
+    only needs to cover a series nothing has derived one for. Writing only into
+    empty fields means a voice edit made during a multi-minute job survives, and a
+    per-chapter override is never mistaken for the series voice.
+    """
 
     def setUp(self):
         import shutil, tempfile
@@ -79,20 +85,27 @@ class TestControlPromptMerge(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.km = KnowledgeManager(base_dir=self.tmp)
+        self.pipeline = NovelPipeline(knowledge_manager=self.km)
 
-    def merge(self, job_copy):
-        """Invoke the real implementation, not a copy of it."""
-        pipeline = NovelPipeline(knowledge_manager=self.km)
-        pipeline._persist_derived_control_prompts("s", job_copy)
+    def persist(self, job_copy, overridden=False):
+        self.pipeline._persist_derived_control_prompts("s", job_copy, overridden=overridden)
         return self.km.load_or_init("s")
 
-    def test_a_mid_job_edit_is_not_undone(self):
+    def test_an_empty_field_is_filled(self):
         k = self.km.load_or_init("s")
-        k.update_narrator_voice(
-            voice_description="เสียงชายแก่", voice_control_prompt="old male narrator"
-        )
+        k.update_narrator_voice(voice_description="เสียงชายแก่")
         self.km.save(k)
-        job_copy = self.km.load_or_init("s")
+
+        job = self.km.load_or_init("s")
+        job.narrator_voice_control_prompt = "old male narrator"
+        self.assertEqual(self.persist(job).narrator_voice_control_prompt, "old male narrator")
+
+    def test_a_mid_job_edit_is_not_overwritten(self):
+        k = self.km.load_or_init("s")
+        k.update_narrator_voice(voice_description="เสียงชายแก่")
+        self.km.save(k)
+        job = self.km.load_or_init("s")
+        job.narrator_voice_control_prompt = "old male narrator"
 
         edit = self.km.load_or_init("s")
         edit.update_narrator_voice(
@@ -100,65 +113,43 @@ class TestControlPromptMerge(unittest.TestCase):
         )
         self.km.save(edit)
 
-        out = self.merge(job_copy)
+        out = self.persist(job)
         self.assertEqual(out.narrator_voice_description, "เสียงเด็กหญิง")
-        self.assertEqual(
-            out.narrator_voice_control_prompt,
-            "young girl narrator",
-            "the job restored a prompt derived from the superseded description",
-        )
+        self.assertEqual(out.narrator_voice_control_prompt, "young girl narrator")
 
-    def test_a_derived_prompt_is_persisted_when_nothing_changed(self):
-        k = self.km.load_or_init("s")
-        k.update_narrator_voice(voice_description="เสียงชายแก่")
-        self.km.save(k)
-
-        job_copy = self.km.load_or_init("s")
-        # Synthesis records both the prompt and the description it came from.
-        job_copy.narrator_voice_control_prompt = "old male narrator"
-        job_copy.narrator_voice_control_source = "เสียงชายแก่"
-
-        out = self.merge(job_copy)
-        self.assertEqual(out.narrator_voice_control_prompt, "old male narrator")
-
-    def test_a_per_chapter_voice_override_is_not_written_back(self):
-        """`/api/synthesize-chapter` takes a one-off `voice`; it must not become
-        the series voice, which would leave the stored description paired with a
-        prompt derived from different text."""
+    def test_a_per_chapter_override_writes_nothing(self):
         k = self.km.load_or_init("s")
         k.update_narrator_voice(voice_description="เสียงชายแก่ ทุ้มลึก")
         self.km.save(k)
 
-        job_copy = self.km.load_or_init("s")
-        job_copy.narrator_voice_control_prompt = "female voice, child, sweet melodic"
-        job_copy.narrator_voice_control_source = "เด็กหญิง เสียงหวานใส"   # the override
+        job = self.km.load_or_init("s")
+        job.narrator_voice_control_prompt = "female voice, child, sweet melodic"
 
-        out = self.merge(job_copy)
-        self.assertEqual(out.narrator_voice_description, "เสียงชายแก่ ทุ้มลึก")
+        out = self.persist(job, overridden=True)
         self.assertIsNone(
             out.narrator_voice_control_prompt,
             "a one-off override was persisted as the series voice",
         )
 
-    def test_character_prompt_follows_the_same_rule(self):
+    def test_a_character_gap_is_filled_but_not_overwritten(self):
         k = self.km.load_or_init("s")
         k.add_character("Aria", "อาเรีย")
         k.update_character_voice("Aria", voice_description="เสียงหวานใส")
         self.km.save(k)
 
-        job_copy = self.km.load_or_init("s")
-        aria = job_copy.find_character("Aria")
-        aria.voice_control_prompt = "sweet female voice"
-        aria.voice_control_source = "เสียงหวานใส"
+        job = self.km.load_or_init("s")
+        job.find_character("Aria").voice_control_prompt = "sweet female voice"
+        self.assertEqual(
+            self.persist(job).find_character("Aria").voice_control_prompt,
+            "sweet female voice",
+        )
 
-        edit = self.km.load_or_init("s")
-        edit.update_character_voice("Aria", voice_description="เสียงห้าว ผู้ชาย")
-        self.km.save(edit)
-
-        out = self.merge(job_copy)
-        self.assertIsNone(
-            out.find_character("Aria").voice_control_prompt,
-            "a superseded character prompt was restored",
+        job2 = self.km.load_or_init("s")
+        job2.find_character("Aria").voice_control_prompt = "something else entirely"
+        self.assertEqual(
+            self.persist(job2).find_character("Aria").voice_control_prompt,
+            "sweet female voice",
+            "an existing prompt was overwritten",
         )
 
 
