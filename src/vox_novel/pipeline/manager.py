@@ -206,19 +206,33 @@ class NovelPipeline:
         if overridden:
             return
         fresh = self.knowledge.load_or_init(series_id, target_lang=knowledge.target_language)
-        if fresh.last_updated > knowledge.last_updated:
-            # Something was edited while this job ran. A description change clears
-            # the cached prompt rather than replacing it, so an empty field here is
-            # deliberate -- backfilling would restore a prompt describing the old
-            # voice, and nothing would invalidate it again.
-            return
+
+        def _same_description(stored: Optional[str], used: Optional[str]) -> bool:
+            # A description change clears the cached prompt rather than replacing
+            # it, so an empty field can mean either "never derived" or "just
+            # edited". Comparing the description this job derived from tells them
+            # apart -- and unlike a whole-file timestamp, an unrelated glossary
+            # write during the job does not suppress the backfill.
+            return (stored or "").strip() == (used or "").strip()
+
         dirty = False
-        if knowledge.narrator_voice_control_prompt and not fresh.narrator_voice_control_prompt:
+        if (
+            knowledge.narrator_voice_control_prompt
+            and not fresh.narrator_voice_control_prompt
+            and _same_description(
+                fresh.narrator_voice_description, knowledge.narrator_voice_description
+            )
+        ):
             fresh.narrator_voice_control_prompt = knowledge.narrator_voice_control_prompt
             dirty = True
         for char in knowledge.characters.values():
             target = fresh.find_character(char.name_en)
-            if target is not None and char.voice_control_prompt and not target.voice_control_prompt:
+            if (
+                target is not None
+                and char.voice_control_prompt
+                and not target.voice_control_prompt
+                and _same_description(target.voice_description, char.voice_description)
+            ):
                 target.voice_control_prompt = char.voice_control_prompt
                 dirty = True
         if dirty:

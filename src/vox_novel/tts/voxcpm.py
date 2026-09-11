@@ -1009,6 +1009,12 @@ class VoxCPM2TTS(BaseTTS):
                 os.link(staging, anchor)
             except FileExistsError:
                 logger.debug(f"Narrator anchor {digest} was created concurrently; using it.")
+            except OSError as e:
+                # Hard links are unsupported on exFAT/FAT32 and some network mounts.
+                # Fall back to a rename: it loses the concurrent-build guarantee, but
+                # a synthesizable voice beats a failed chapter.
+                logger.warning(f"Could not link the narrator anchor ({e}); renaming instead.")
+                os.replace(staging, anchor)
         finally:
             staging.unlink(missing_ok=True)
         return anchor

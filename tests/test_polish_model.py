@@ -117,6 +117,46 @@ class TestControlPromptBackfill(unittest.TestCase):
         self.assertEqual(out.narrator_voice_description, "เสียงเด็กหญิง")
         self.assertEqual(out.narrator_voice_control_prompt, "young girl narrator")
 
+    def test_an_unrelated_edit_does_not_suppress_the_backfill(self):
+        """A glossary write during the job must not stop the prompt being saved.
+
+        If it does, the next chapter re-derives, the LLM phrases it differently,
+        the anchor digest changes, and the narrator is a different person.
+        """
+        k = self.km.load_or_init("s")
+        k.update_narrator_voice(voice_description="เสียงชายแก่")
+        self.km.save(k)
+        job = self.km.load_or_init("s")
+        job.narrator_voice_control_prompt = "old male narrator"
+
+        edit = self.km.load_or_init("s")
+        edit.add_term("sword", "ดาบ")        # nothing to do with the narrator
+        self.km.save(edit)
+
+        self.assertEqual(
+            self.persist(job).narrator_voice_control_prompt,
+            "old male narrator",
+            "an unrelated edit suppressed the backfill",
+        )
+
+    def test_a_description_edit_does_suppress_it(self):
+        k = self.km.load_or_init("s")
+        k.update_narrator_voice(voice_description="เสียงชายแก่")
+        self.km.save(k)
+        job = self.km.load_or_init("s")
+        job.narrator_voice_control_prompt = "old male narrator"
+
+        edit = self.km.load_or_init("s")
+        edit.update_narrator_voice(voice_description="เสียงเด็กหญิง")
+        self.km.save(edit)
+
+        out = self.persist(job)
+        self.assertIsNone(
+            out.narrator_voice_control_prompt,
+            "a prompt describing the previous voice was restored",
+        )
+        self.assertEqual(out.narrator_voice_description, "เสียงเด็กหญิง")
+
     def test_a_per_chapter_override_writes_nothing(self):
         k = self.km.load_or_init("s")
         k.update_narrator_voice(voice_description="เสียงชายแก่ ทุ้มลึก")
