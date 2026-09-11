@@ -196,6 +196,29 @@ echo was therefore right on both accuracy and its 41% output-cost saving.
 
 Runtime: ~2.5 minutes per 232-paragraph chapter, full coverage, no gaps.
 
+### Model choice, and what agreement-gating is actually for
+
+Same gold set, curated registry:
+
+| configuration | right voice | wrong voice | narrator | time |
+| --- | --- | --- | --- | --- |
+| qwen3:14b alone | 25 | 5 | 0 | 148s |
+| qwen3:14b, confirmed by qwen3.8 | 24 | 0 | 6 | 434s |
+| **qwen3.8 alone** | **30** | **0** | **0** | **221s** |
+
+The gate converts wrong voices into narrator fallbacks, which is the right trade
+when a model cannot be trusted -- a fallback is inaudible, a wrong character voice
+is not. But it is not a substitute for a better model. Against qwen3:14b it looked
+like a large win; against qwen3.8 it is strictly worse, costing six correct
+attributions and twice the time to protect against errors the stronger model does
+not make.
+
+So: pick the best model available, and reach for --confirm-with only when the
+primary is known to be weak, or on a series where a wrong voice is more costly
+than a missed one. Do not read the 30/30 as an accuracy estimate -- it is the same
+burned chapter, and a perfect score there says more about contamination than
+about capability.
+
 **No number here measures generalisation.** Both implementations' prompts derive
 from one tuned on this chapter. A held-out set -- ideally a chapter of the
 series actually being produced -- is needed before trusting an absolute figure.
