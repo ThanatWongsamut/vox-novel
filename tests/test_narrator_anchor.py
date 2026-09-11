@@ -325,20 +325,36 @@ class TestAnchorLinkFallback(AnchorTestCase):
             "a staging file was left behind",
         )
 
-    def test_the_fallback_does_not_clobber_an_existing_anchor(self):
-        """os.replace would overwrite a file another chapter is cloning from."""
+    def test_the_fallback_does_not_clobber_an_anchor_that_appears_mid_build(self):
+        """The real race: absent at the exists() check, present by the time we land.
+
+        A rename would overwrite the file the winning job's chapter is already
+        cloning from. Writing the competing anchor from inside synthesize is what
+        makes this exercise the fallback rather than the early return.
+        """
         engine = self.offline_engine()
-        anchor = self.build(engine)
-        anchor.write_bytes(b"IN-USE-BY-ANOTHER-CHAPTER")
+        self.voices.mkdir(parents=True, exist_ok=True)
+        original = engine.synthesize
+        rival = b"IN-USE-BY-ANOTHER-CHAPTER"
 
-        with mock.patch("os.link", side_effect=OSError(1, "Operation not permitted")):
-            again = self.build(engine)
+        async def synthesize_then_race(**kwargs):
+            result = await original(**kwargs)
+            # Another job finishes first and lands its anchor.
+            for f in self.voices.glob("narrator_ref.*.wav"):
+                if ".partial." not in f.name:
+                    f.write_bytes(rival)
+                    break
+            else:
+                digest = Path(kwargs["output_file"]).name.split(".")[1]
+                (self.voices / f"narrator_ref.{digest}.wav").write_bytes(rival)
+            return result
 
-        self.assertEqual(again, anchor)
+        with mock.patch.object(engine, "synthesize", synthesize_then_race), \
+             mock.patch("os.link", side_effect=OSError(1, "Operation not permitted")):
+            anchor = self.build(engine)
+
         self.assertEqual(
-            anchor.read_bytes(),
-            b"IN-USE-BY-ANOTHER-CHAPTER",
-            "the fallback overwrote an anchor already in use",
+            anchor.read_bytes(), rival, "the fallback overwrote an anchor already in use"
         )
 
 
