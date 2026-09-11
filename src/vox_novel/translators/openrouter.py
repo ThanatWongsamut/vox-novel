@@ -43,9 +43,10 @@ class OpenRouterTranslator(BaseTranslator):
             env_fallbacks = os.getenv("OPENROUTER_FALLBACK_MODELS")
             if env_fallbacks:
                 self.fallback_models = [m.strip() for m in env_fallbacks.split(",") if m.strip()]
-            elif "minimax" in self.model_name:
-                self.fallback_models = ["minimax/minimax-m2.7:free"]
             else:
+                # No hardcoded fallback. Free variants get withdrawn -- the previous
+                # default here pointed at one that no longer exists, so a failure
+                # retried against a 404. Set OPENROUTER_FALLBACK_MODELS to opt in.
                 self.fallback_models = []
 
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
