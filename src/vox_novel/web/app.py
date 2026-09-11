@@ -805,6 +805,79 @@ async def synthesize_chapter_endpoint(
     return {"job_id": job_id, "status": "started"}
 
 
+@web_app.get("/series/{series_id}/speakers/{chapter_id}", response_class=HTMLResponse)
+async def speaker_review(request: Request, series_id: str, chapter_id: str, lang: str = "th"):
+    """Review and correct who speaks each line of a chapter.
+
+    Attribution is not reliable enough to run unattended, so this is where a
+    human fixes it. Correcting a line here is also how a gold set gets built:
+    the corrections are the labels.
+    """
+    series_id = safe_id(series_id, "series_id")
+    chapter_id = safe_id(chapter_id, "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    characters = sorted(
+        knowledge.characters.values(), key=lambda c: (not c.is_narrator, c.name_en.lower())
+    )
+    attributed = sum(1 for p in chapter.paragraphs if p.speaker)
+    spoken = sum(1 for p in chapter.paragraphs if p.speech_type in ("dialogue", "thought"))
+
+    return templates.TemplateResponse(
+        request=request,
+        name="speakers.html",
+        context={
+            "chapter": chapter,
+            "characters": characters,
+            "narration_note": knowledge.narration_note or "",
+            "near_duplicates": knowledge.near_duplicate_characters(),
+            "attributed": attributed,
+            "spoken": spoken,
+            "lang": lang,
+        },
+    )
+
+
+@web_app.post("/api/speakers/update")
+async def update_speaker(request: Request):
+    """Correct one paragraph's speaker or type."""
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+    try:
+        index = int(body.get("paragraph"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="paragraph must be an integer")
+
+    speech_type = body.get("speech_type")
+    if speech_type not in ("dialogue", "thought", "narration"):
+        raise HTTPException(
+            status_code=400, detail="speech_type must be dialogue, thought or narration"
+        )
+    speaker = (body.get("speaker") or "").strip() or None
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    target = next((p for p in chapter.paragraphs if p.index == index), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Paragraph {index} not found")
+
+    # Narration has no speaker; storing one would leave the two disagreeing.
+    target.speech_type = speech_type
+    target.speaker = None if speech_type == "narration" else speaker
+    # A human corrected this line, so it is ground truth rather than a guess.
+    target.speaker_verified = True
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    return {"status": "ok", "paragraph": index, "speaker": target.speaker}
+
+
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
 async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     series_id = safe_id(series_id, "series_id")

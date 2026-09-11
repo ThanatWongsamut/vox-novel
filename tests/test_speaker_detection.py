@@ -421,5 +421,79 @@ class TestLocalServerConfig(unittest.TestCase):
             self.assertIsNotNone(NovelPipeline.speaker_translator())
 
 
+class TestReviewEndpoint(unittest.TestCase):
+    """Correcting a line is how a human fixes attribution -- and how gold labels
+    get made, since the corrections are the labels."""
+
+    def setUp(self):
+        import shutil, tempfile
+        from pathlib import Path
+        from fastapi.testclient import TestClient
+        from vox_novel.web import app as web
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._roots = [web.storage, web.knowledge_mgr, web.pipeline.storage, web.pipeline.knowledge]
+        self._orig = [m.base_dir for m in self._roots]
+        for m in self._roots:
+            m.base_dir = self.tmp
+        self.addCleanup(lambda: [setattr(m, "base_dir", o) for m, o in zip(self._roots, self._orig)])
+
+        self.web = web
+        self.client = TestClient(web.web_app)
+
+        chap = chapter(3)
+        chap.paragraphs[1].speech_type = "dialogue"
+        chap.paragraphs[1].speaker = "ริโก้"
+        web.storage.save_chapter(chap)
+        k = web.knowledge_mgr.load_or_init("b", target_lang="th")
+        k.add_character("ริโก้", "ริโก้")
+        k.add_character("พุดดิ้ง", "พุดดิ้ง")
+        web.knowledge_mgr.save(k)
+
+    def update(self, **kw):
+        body = {"series_id": "b", "chapter_id": "1", "paragraph": 2,
+                "speech_type": "dialogue", "speaker": "ริโก้"}
+        body.update(kw)
+        return self.client.post("/api/speakers/update", json=body)
+
+    def saved(self):
+        return self.web.storage.get_chapter("b", "1")
+
+    def test_the_page_renders(self):
+        res = self.client.get("/series/b/speakers/1")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertIn("ริโก้", res.text)
+
+    def test_a_correction_is_persisted_and_marked_verified(self):
+        self.assertEqual(self.update(speaker="พุดดิ้ง").status_code, 200)
+        p = self.saved().paragraphs[1]
+        self.assertEqual(p.speaker, "พุดดิ้ง")
+        self.assertTrue(p.speaker_verified, "a human correction was not recorded as verified")
+
+    def test_switching_to_narration_clears_the_speaker(self):
+        # Leaving a speaker on a narration line would have the two disagree.
+        self.update(speech_type="narration", speaker="ริโก้")
+        p = self.saved().paragraphs[1]
+        self.assertEqual(p.speech_type, "narration")
+        self.assertIsNone(p.speaker)
+
+    def test_an_unattributed_line_is_allowed(self):
+        self.assertEqual(self.update(speaker="").status_code, 200)
+        self.assertIsNone(self.saved().paragraphs[1].speaker)
+
+    def test_an_invalid_type_is_rejected(self):
+        self.assertEqual(self.update(speech_type="shouting").status_code, 400)
+
+    def test_a_missing_paragraph_is_rejected(self):
+        self.assertEqual(self.update(paragraph=999).status_code, 404)
+
+    def test_a_traversing_series_id_is_rejected(self):
+        self.assertEqual(self.update(series_id="../evil").status_code, 400)
+
+    def test_a_non_numeric_paragraph_is_rejected(self):
+        self.assertEqual(self.update(paragraph="two").status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

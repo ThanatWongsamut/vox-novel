@@ -13,7 +13,11 @@ class Paragraph(BaseModel):
     # per-character voice path reads it and stays inert until something does.
     speaker: Optional[str] = None
     emotion: Optional[str] = None  # e.g. "calm", "angry", "fearful", "whisper", "urgent"
-    speech_type: Optional[str] = None  # "narration" or "dialogue"
+    speech_type: Optional[str] = None  # "narration", "dialogue" or "thought"
+    # True once a human has confirmed or corrected the attribution. Detection
+    # leaves it False, so a re-run can overwrite its own guesses without
+    # discarding reviewed lines -- and a verified set doubles as gold labels.
+    speaker_verified: bool = False
 
 
 class Chapter(BaseModel):
