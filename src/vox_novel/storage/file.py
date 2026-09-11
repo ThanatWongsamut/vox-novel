@@ -212,12 +212,16 @@ class StorageManager:
         p1_mp3 = chapters_dir / f"chapter_{chapter_id}.mp3"
         if p1_mp3.exists():
             return p1_mp3
-        # Check matching prefix.wav
-        for wf in chapters_dir.glob("*.wav"):
-            if chapter_id in wf.stem:
+        # Substring matching is loose, so exclude artifacts that are not chapter
+        # audio: per-paragraph chunks, and any dotfile a job may stage here.
+        def _is_chapter_audio(f: Path) -> bool:
+            return not f.name.startswith((".", "para_")) and chapter_id in f.stem
+
+        for wf in sorted(chapters_dir.glob("*.wav")):
+            if _is_chapter_audio(wf):
                 return wf
-        for mf in chapters_dir.glob("*.mp3"):
-            if chapter_id in mf.stem:
+        for mf in sorted(chapters_dir.glob("*.mp3")):
+            if _is_chapter_audio(mf):
                 return mf
         return None
 

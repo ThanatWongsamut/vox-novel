@@ -158,7 +158,6 @@ class NovelPipeline:
             raise ValueError(f"Chapter '{chapter_id}' not found in series '{series_id}'")
 
         knowledge = self.knowledge.load_or_init(series_id)
-        narrator_desc = voice_description or knowledge.narrator_voice_description
         ref_audio = reference_audio or (
             Path(knowledge.narrator_voice_ref_audio)
             if knowledge.narrator_voice_ref_audio and Path(knowledge.narrator_voice_ref_audio).exists()
@@ -173,7 +172,10 @@ class NovelPipeline:
             chapter=chapter,
             output_dir=output_dir,
             use_translated=True,
-            voice_description=narrator_desc,
+            # Pass the per-chapter override as-is. synthesize_chapter falls back to
+            # knowledge on its own; collapsing the two here would make every call
+            # indistinguishable from an override and defeat the prompt cache.
+            voice_description=voice_description,
             reference_audio=ref_audio,
             knowledge=knowledge,
             progress_callback=progress_callback,

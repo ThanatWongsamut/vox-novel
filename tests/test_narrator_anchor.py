@@ -148,9 +148,9 @@ class TestAnchorStaleness(AnchorTestCase):
         )
         self.assertEqual(supplied.read_bytes(), before, "uploaded reference was clobbered")
 
-    def test_unstamped_file_on_disk_is_never_overwritten(self):
-        """The path that actually regressed: a wav is present with no stamp and
-        knowledge carries no pointer to it, so nothing marks it as ours."""
+    def test_unstamped_file_is_kept_when_there_is_nothing_to_judge_by(self):
+        """No knowledge object means no way to tell an upload from a legacy file.
+        Losing a user's clip is worse than keeping a stale voice."""
         supplied = self.write_supplied_anchor()
         before = supplied.read_bytes()
 
@@ -165,6 +165,46 @@ class TestAnchorStaleness(AnchorTestCase):
         )
         self.assertEqual(
             supplied.read_bytes(), before, "an unstamped user file was regenerated"
+        )
+
+    def test_uploaded_reference_is_kept_even_with_knowledge_present(self):
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        supplied = self.write_supplied_anchor()
+        before = supplied.read_bytes()
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.update_narrator_voice(voice_ref_audio=str(supplied))   # what upload records
+
+        engine = self.offline_engine()
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter(), output_dir=self.out, knowledge=k,
+                translator=Translator("a completely different voice"),
+            )
+        )
+        self.assertEqual(supplied.read_bytes(), before, "an upload was regenerated")
+
+    def test_legacy_unstamped_anchor_can_be_rebuilt(self):
+        """A file written before stamping existed must not freeze the series voice
+        forever; knowledge holds no pointer to it, so it is ours to replace."""
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        legacy = self.write_supplied_anchor()
+        before = legacy.read_bytes()
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.update_narrator_voice(voice_description="เสียงเด็กหญิง หวานใส")
+
+        engine = self.offline_engine()
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter(), output_dir=self.out, knowledge=k,
+                translator=Translator("young girl narrator, sweet"),
+            )
+        )
+        self.assertNotEqual(
+            legacy.read_bytes(), before, "a legacy anchor stayed stale forever"
         )
 
 
@@ -183,6 +223,162 @@ class TestEmotionTraits(unittest.TestCase):
         self.assertEqual(VoxCPM2TTS._emotion_traits("ไม่มีคำนี้เลย"), "")
         self.assertEqual(VoxCPM2TTS._emotion_traits(None), "")
         self.assertEqual(VoxCPM2TTS._emotion_traits(""), "")
+
+
+class TestControlPromptCaching(AnchorTestCase):
+    """The cache is what keeps a series' narrator voice stable between chapters.
+
+    Re-deriving per chapter returns varying phrasings (the LLM runs at
+    temperature 0.3), which changes the stamp, rebuilds the anchor, and drifts the
+    voice chapter to chapter.
+    """
+
+    def synth(self, engine, knowledge, translator, override=None, cid="1"):
+        asyncio.run(
+            engine.synthesize_chapter(
+                chapter=chapter(cid),
+                output_dir=self.out,
+                voice_description=override,
+                knowledge=knowledge,
+                translator=translator,
+            )
+        )
+
+    def knowledge_with_cached_prompt(self):
+        from vox_novel.models.series_knowledge import SeriesKnowledge
+
+        k = SeriesKnowledge(series_id="s", target_language="th")
+        k.update_narrator_voice(
+            voice_description="เสียงชายแก่", voice_control_prompt="cached male narrator"
+        )
+        return k
+
+    def counting_translator(self):
+        calls = []
+
+        class T:
+            async def complete(self, system_prompt, user_prompt):
+                calls.append(user_prompt)
+                return "freshly derived narrator"
+
+        return T(), calls
+
+    def test_normal_path_uses_the_cache_and_makes_no_llm_call(self):
+        k = self.knowledge_with_cached_prompt()
+        t, calls = self.counting_translator()
+        self.synth(self.offline_engine(), k, t)
+        self.assertEqual(calls, [], "the cached prompt should have been reused")
+        self.assertEqual(k.narrator_voice_control_prompt, "cached male narrator")
+
+    def test_an_explicit_override_bypasses_the_cache(self):
+        k = self.knowledge_with_cached_prompt()
+        t, calls = self.counting_translator()
+        self.synth(self.offline_engine(), k, t, override="เด็กหญิง เสียงหวานใส")
+        self.assertEqual(len(calls), 1, "an override must be derived, not read from cache")
+        self.assertIn("เด็กหญิง", calls[0])
+
+    def test_repeated_chapters_do_not_rebuild_the_anchor(self):
+        k = self.knowledge_with_cached_prompt()
+        t, _ = self.counting_translator()
+        engine = self.offline_engine()
+        self.synth(engine, k, t, cid="1")
+        anchor = self.voices / "narrator_ref.wav"
+        first = anchor.read_bytes()
+        self.synth(engine, k, t, cid="2")
+        self.synth(engine, k, t, cid="3")
+        self.assertEqual(anchor.read_bytes(), first, "the narrator voice drifted between chapters")
+
+
+class TestAnchorArtifacts(AnchorTestCase):
+    def test_no_anchor_artifact_is_left_beside_the_chapter_audio(self):
+        engine = self.offline_engine()
+        self.run_chapter(engine, Translator("steady narrator"))
+        strays = [f.name for f in self.out.iterdir() if "anchor" in f.name.lower()]
+        self.assertEqual(strays, [], "a pinned anchor copy was left in the chapters dir")
+
+    def test_a_stray_artifact_is_not_served_as_chapter_audio(self):
+        from vox_novel.storage.file import StorageManager
+
+        base = self.tmp / "store"
+        chapters = base / "s1" / "chapters"
+        chapters.mkdir(parents=True)
+        (chapters / ".anchor_2.wav").write_bytes(b"not a chapter")
+        (chapters / "para_2_1.wav").write_bytes(b"not a chapter either")
+
+        got = StorageManager(base_dir=base).get_chapter_audio_file("s1", "2")
+        self.assertIsNone(got, f"served {got} as chapter audio")
+
+
+class TestPipelineDoesNotDefeatTheCache(unittest.TestCase):
+    """Exercise the layer the regression actually lived in.
+
+    synthesize_chapter_audio used to collapse the per-chapter `voice` override and
+    the series description into one argument, so every call looked like an override
+    and the prompt cache was bypassed -- one LLM call per chapter, a new phrasing
+    each time, and a rebuilt anchor.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+        from vox_novel.pipeline.manager import NovelPipeline
+        from vox_novel.storage.file import StorageManager
+        from vox_novel.storage.knowledge import KnowledgeManager
+
+        self.storage = StorageManager(base_dir=self.tmp)
+        self.km = KnowledgeManager(base_dir=self.tmp)
+        self.pipeline = NovelPipeline(storage_manager=self.storage, knowledge_manager=self.km)
+
+        self.storage.save_chapter(chapter("7"))
+        k = self.km.load_or_init("b")
+        k.update_narrator_voice(
+            voice_description="เสียงชายแก่", voice_control_prompt="cached male narrator"
+        )
+        k.narrator_voice_control_source = "เสียงชายแก่"
+        self.km.save(k)
+
+    def synthesize(self, voice=None):
+        calls = []
+
+        class T:
+            async def complete(self, system_prompt, user_prompt):
+                calls.append(user_prompt)
+                return "freshly derived narrator"
+
+        engine = VoxCPM2TTS(api_url=None)
+        engine.api_url = None
+        with mock.patch.object(engine, "_get_local_model", return_value=None), \
+             mock.patch("vox_novel.pipeline.manager.tts_registry.get_tts", return_value=engine), \
+             mock.patch.object(
+                 type(self.pipeline), "voice_prompt_translator", staticmethod(lambda: T())
+             ):
+            asyncio.run(
+                self.pipeline.synthesize_chapter_audio(
+                    series_id="b", chapter_id="7", voice_description=voice
+                )
+            )
+        return calls
+
+    def test_a_plain_chapter_reuses_the_cached_prompt(self):
+        self.assertEqual(
+            self.synthesize(), [], "the pipeline bypassed the cache on a normal chapter"
+        )
+
+    def test_an_override_is_still_derived(self):
+        calls = self.synthesize(voice="เด็กหญิง เสียงหวานใส")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("เด็กหญิง", calls[0])
+
+    def test_an_override_is_not_persisted_as_the_series_voice(self):
+        self.synthesize(voice="เด็กหญิง เสียงหวานใส")
+        k = self.km.load_or_init("b")
+        self.assertEqual(k.narrator_voice_description, "เสียงชายแก่")
+        self.assertEqual(
+            k.narrator_voice_control_prompt,
+            "cached male narrator",
+            "a one-off override overwrote the series voice",
+        )
 
 
 class TestReferenceCache(unittest.TestCase):

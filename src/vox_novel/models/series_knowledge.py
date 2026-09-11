@@ -101,6 +101,7 @@ class SeriesKnowledge(BaseModel):
             # The cached English control no longer describes the new text; an
             # explicit control in this same call overrides that below.
             self.narrator_voice_control_prompt = None
+            self.narrator_voice_control_source = None
         if voice_ref_audio is not None:
             self.narrator_voice_ref_audio = voice_ref_audio
         if voice_control_prompt is not None:
@@ -122,6 +123,7 @@ class SeriesKnowledge(BaseModel):
             char.voice_description = voice_description
             # The cached English control no longer describes the new text.
             char.voice_control_prompt = None
+            char.voice_control_source = None
         if voice_ref_audio is not None:
             char.voice_ref_audio = voice_ref_audio
         if voice_control_prompt is not None:

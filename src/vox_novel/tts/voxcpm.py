@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, List, Optional
@@ -468,9 +469,13 @@ class VoxCPM2TTS(BaseTTS):
     # These are excluded when an emotion is folded into a speaker's control prompt,
     # since the speaker's own identity is already established.
     _IDENTITY_TRAITS: frozenset = frozenset({
+        # from the Thai trait table
         "noble lady", "elegant gentlewoman", "noble gentleman", "young girl",
         "young boy", "child", "elderly", "teenager", "soft and deep", "deep voice",
         "fantasy storytelling",
+        # from the English pass-through vocabulary, which emits these as bare words
+        "young", "aged", "teenage", "childlike", "adult", "mature",
+        "girl", "boy", "lady", "gentleman", "woman", "man", "noble",
     })
     # Voice design must not stall a chapter because the LLM is slow or down;
     # the keyword table is always available as a fallback.
@@ -935,41 +940,100 @@ class VoxCPM2TTS(BaseTTS):
             # pins the whole series to an old voice. Stamp the control it was built
             # with and rebuild only when that changes.
             #
-            # An unstamped wav was put there by the user (upload or an earlier
-            # release); never overwrite it.
+            # An unstamped wav is either a user upload or one written by a release
+            # predating the stamp. Only the upload is protected -- knowledge holds a
+            # pointer to it. A legacy file is adopted and stamped so that later
+            # description changes can rebuild it, instead of freezing forever.
             stamp = voices_dir / "narrator_ref.control.txt"
             previous = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
-            ours = stamp.exists()
+            # An upload records a pointer in knowledge; a file written by a release
+            # predating the stamp does not. With no knowledge object at all there is
+            # nothing to judge by, so leave the file alone -- losing a user's clip is
+            # worse than keeping a stale voice.
+            user_supplied = bool(getattr(knowledge, "narrator_voice_ref_audio", None))
+            legacy_ours = knowledge is not None and not user_supplied
+            ours = stamp.exists() or (narrator_sample.exists() and legacy_ours)
             if not narrator_sample.exists() or (ours and previous != narrator_control):
                 logger.info("Generating canonical narrator reference voice anchor...")
                 sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
                 # Build beside the target and rename: sf.write is not atomic, and a
                 # concurrent job cloning this file would otherwise read it torn.
                 staging = voices_dir / f"narrator_ref.{os.getpid()}.{id(self)}.partial.wav"
-                await self.synthesize(
-                    text=sample_text,
-                    output_file=staging,
-                    voice_description=default_desc,
-                    reference_audio=None,
-                    # Without this the anchor is built from the keyword table and
-                    # the derived prompt is discarded -- and since every paragraph
-                    # clones from this anchor, it would influence nothing at all.
-                    control_prompt=narrator_control,
-                )
-                os.replace(staging, narrator_sample)
-                stamp.write_text(narrator_control or "", encoding="utf-8")
+                try:
+                    await self.synthesize(
+                        text=sample_text,
+                        output_file=staging,
+                        voice_description=default_desc,
+                        reference_audio=None,
+                        # Without this the anchor is built from the keyword table and
+                        # the derived prompt is discarded -- and since every paragraph
+                        # clones from this anchor, it would influence nothing at all.
+                        control_prompt=narrator_control,
+                    )
+                    # Stamp first. A crash between the two leaves an unstamped wav,
+                    # which the guard above reads as a user file and never rebuilds --
+                    # an unrecoverable freeze. A stamp with no wav just rebuilds.
+                    stamp.write_text(narrator_control or "", encoding="utf-8")
+                    os.replace(staging, narrator_sample)
+                finally:
+                    Path(staging).unlink(missing_ok=True)
             effective_narrator_ref = narrator_sample
 
         # Pin the anchor for the rest of this chapter. Another job may replace the
-        # shared file partway through; cloning half the paragraphs from a different
-        # voice is worse than the cost of one copy.
+        # shared file partway through, and cloning half the paragraphs from a
+        # different voice is worse than the cost of one copy. The copy lives in a
+        # private temp directory: putting it beside the chapter audio let
+        # get_chapter_audio_file match it as a chapter, and left it behind.
+        pin_dir: Optional[str] = None
         if effective_narrator_ref is not None and Path(effective_narrator_ref).exists():
-            pinned = output_dir / f".anchor_{chapter.id}.wav"
             try:
+                pin_dir = tempfile.mkdtemp(prefix="voxnovel-anchor-")
+                pinned = Path(pin_dir) / "narrator_ref.wav"
                 shutil.copyfile(effective_narrator_ref, pinned)
                 effective_narrator_ref = pinned
             except OSError as e:
                 logger.debug(f"Could not pin narrator anchor, using it in place: {e}")
+                if pin_dir:
+                    shutil.rmtree(pin_dir, ignore_errors=True)
+                    pin_dir = None
+
+        try:
+            return await self._synthesize_paragraphs(
+                chapter=chapter,
+                output_dir=output_dir,
+                valid_paras=valid_paras,
+                use_translated=use_translated,
+                default_desc=default_desc,
+                narrator_control=narrator_control,
+                effective_narrator_ref=effective_narrator_ref,
+                control_by_speaker=control_by_speaker,
+                knowledge=knowledge,
+                translator=translator,
+                progress_callback=progress_callback,
+            )
+        finally:
+            if pin_dir:
+                shutil.rmtree(pin_dir, ignore_errors=True)
+
+    async def _synthesize_paragraphs(
+        self,
+        chapter: Chapter,
+        output_dir: Path,
+        valid_paras: List[Paragraph],
+        use_translated: bool,
+        default_desc: str,
+        narrator_control: str,
+        effective_narrator_ref,
+        control_by_speaker: dict,
+        knowledge: Optional[Any],
+        translator: Optional[Any],
+        progress_callback: Optional[Callable[[int, str], Any]],
+    ) -> Path:
+        """Synthesize each paragraph and stitch the chapter."""
+        final_file = output_dir / f"chapter_{chapter.id}.wav"
+        audio_segments: List[np.ndarray] = []
+        chunk_rate: Optional[int] = None
+        total = max(len(valid_paras), 1)
 
         for idx, p in enumerate(valid_paras):
             text_to_speak = (p.translated_text if use_translated else p.text).strip()
