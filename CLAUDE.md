@@ -77,11 +77,15 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
 
 ## Known gaps
 
-- **Per-character voices are wired but inert.** `Paragraph.speaker` is never
-  assigned, so `VoxCPM2TTS.synthesize_chapter`'s character branch, the
-  per-speaker prompt cache and the emotion suffix cannot run. Everything
-  downstream of speaker detection is built and tested; adding detection turns it
-  on. Until then, every paragraph uses the narrator voice.
+- **Attribution needs a human pass before synthesis.** Measured 93.3% on a
+  held-out chapter, so roughly one spoken line in fifteen gets the wrong voice,
+  and the errors are silent. The review page at
+  `/series/<id>/speakers/<chapter>` is where that is fixed, and its corrections
+  double as gold labels -- `speaker_detected` keeps the model's guess alongside
+  the human's verdict so a run can be scored after the fact.
+- **`Paragraph.emotion` is never assigned.** The emotion suffix on the control
+  prompt is built and tested but nothing sets the field, so every line is read
+  flat. Detection returns a speech type, not an emotion.
 - **There is no CI.** The test suite only runs when someone runs it.
 
 ## Sources

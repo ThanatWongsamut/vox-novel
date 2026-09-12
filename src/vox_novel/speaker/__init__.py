@@ -1,7 +1,8 @@
 """Speaker attribution: which character speaks each paragraph.
 
-Turns on the per-character voice path in the TTS engine, which is built and
-tested but inert while nothing assigns Paragraph.speaker.
+Assigns Paragraph.speaker, which is what the TTS engine's per-character voice
+path reads. Accuracy depends on the character registry more than on the model,
+so a chapter is reviewed before it is synthesized.
 """
 
 from vox_novel.speaker.models import CharacterDraft, ChunkAnnotation, Segment

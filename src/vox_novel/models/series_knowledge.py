@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +10,21 @@ class TermMapping(BaseModel):
     category: str = "general"  # gaming, character, location, item, skill, monster, honorific
     aliases: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
+
+
+class VoiceChoice(NamedTuple):
+    """Which of a character's voices a line is heard in, and where it is cached.
+
+    `slug` distinguishes the two voices everywhere a name becomes a filename or a
+    cache key, so a body voice never serves the character's own prompt or clones
+    from their anchor.
+    """
+
+    description: Optional[str]
+    ref_audio: Optional[str]
+    control_prompt: Optional[str]
+    slug: str
+    is_body: bool
 
 
 class CharacterProfile(BaseModel):
@@ -34,6 +49,63 @@ class CharacterProfile(BaseModel):
     speech_style: Optional[str] = None
     line_count: int = 0
     last_seen_chapter: Optional[str] = None
+    # A character whose spoken lines are heard in a different voice than their
+    # inner ones -- a body swap, a possession, a disguise. Attribution stays
+    # about identity: every line is still this character's. Only dialogue is
+    # voiced from here; thought keeps the character's own voice, which is the
+    # point of the distinction.
+    #
+    # This is a voice, not a second character, because the other body's name is
+    # usually already an alias of this one. Registering it separately would make
+    # `find_character` ambiguous on a name the attribution model actually emits.
+    body_voice_description: Optional[str] = None
+    body_voice_ref_audio: Optional[str] = None
+    body_voice_control_prompt: Optional[str] = None
+    # The chapter the swap begins at, by chapter_number. Earlier chapters keep
+    # the character's own voice, so re-synthesizing one after the plot moves does
+    # not silently re-voice it. Unset means the body voice never applies.
+    body_voice_from_chapter: Optional[float] = None
+
+    def voice_for(
+        self, speech_type: Optional[str], chapter_number: Optional[float] = None
+    ) -> "VoiceChoice":
+        """Pick which of this character's voices a line is heard in.
+
+        Only spoken lines take the body voice. Thought keeps the character's own,
+        which is the whole point of the distinction: the listener hears the body
+        others hear, and the mind the character actually is.
+
+        A chapter with no number cannot be placed relative to the swap, so it
+        falls back to the character's own voice rather than guessing.
+        """
+        swapped = (
+            self.body_voice_description is not None
+            and self.body_voice_from_chapter is not None
+            and chapter_number is not None
+            and chapter_number >= self.body_voice_from_chapter
+        )
+        if swapped and speech_type == "dialogue":
+            return VoiceChoice(
+                self.body_voice_description,
+                self.body_voice_ref_audio,
+                self.body_voice_control_prompt,
+                f"{self.name_en}__body",
+                True,
+            )
+        return VoiceChoice(
+            self.voice_description,
+            self.voice_ref_audio,
+            self.voice_control_prompt,
+            self.name_en,
+            False,
+        )
+
+    def remember_control_prompt(self, choice: "VoiceChoice", control: str) -> None:
+        """Cache a derived control prompt onto whichever voice produced it."""
+        if choice.is_body:
+            self.body_voice_control_prompt = control
+        else:
+            self.voice_control_prompt = control
 
 
 class SeriesKnowledge(BaseModel):
@@ -184,19 +256,32 @@ class SeriesKnowledge(BaseModel):
         voice_description: Optional[str] = None,
         voice_ref_audio: Optional[str] = None,
         voice_control_prompt: Optional[str] = None,
+        slot: str = "own",
+        from_chapter: Optional[float] = None,
     ) -> bool:
-        """Update character voice prompt and/or reference audio anchor."""
+        """Update character voice prompt and/or reference audio anchor.
+
+        `slot` picks which of the character's two voices is written -- "own", or
+        "body" for the voice their spoken lines take while they are in someone
+        else's body. The body voice also needs `from_chapter`, without which it
+        never applies.
+        """
+        if slot not in ("own", "body"):
+            raise ValueError(f"slot must be 'own' or 'body', not {slot!r}")
         char = self.find_character(name_en)
         if not char:
             return False
+        prefix = "body_voice" if slot == "body" else "voice"
         if voice_description is not None:
-            char.voice_description = voice_description
+            setattr(char, f"{prefix}_description", voice_description or None)
             # The cached English control no longer describes the new text.
-            char.voice_control_prompt = None
+            setattr(char, f"{prefix}_control_prompt", None)
         if voice_ref_audio is not None:
-            char.voice_ref_audio = voice_ref_audio
+            setattr(char, f"{prefix}_ref_audio", voice_ref_audio)
         if voice_control_prompt is not None:
-            char.voice_control_prompt = voice_control_prompt
+            setattr(char, f"{prefix}_control_prompt", voice_control_prompt)
+        if slot == "body":
+            char.body_voice_from_chapter = from_chapter
         self.last_updated = datetime.utcnow()
         return True
 

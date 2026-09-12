@@ -1081,6 +1081,29 @@ async def update_voice_prompt(request: Request):
     voice_type = body.get("voice_type")  # "narrator" or "character"
     character_name = body.get("character_name")
     voice_description = body.get("voice_description", "").strip()
+    # "own", or "body" for the voice a character's spoken lines take while they
+    # are in someone else's body. Their thoughts keep their own voice.
+    voice_slot = body.get("voice_slot", "own")
+    from_chapter = body.get("body_voice_from_chapter")
+
+    if voice_slot not in ("own", "body"):
+        raise HTTPException(status_code=400, detail="voice_slot must be 'own' or 'body'")
+    if voice_slot == "body" and voice_type != "character":
+        raise HTTPException(status_code=400, detail="only a character has a body voice")
+    if from_chapter is not None:
+        try:
+            from_chapter = float(from_chapter)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="body_voice_from_chapter must be a number"
+            )
+    # A body voice with no start chapter would apply to the whole series,
+    # re-voicing chapters set before the swap.
+    if voice_slot == "body" and voice_description and from_chapter is None:
+        raise HTTPException(
+            status_code=400,
+            detail="a body voice needs the chapter number the swap starts at",
+        )
 
     if not series_id or not voice_type:
         raise HTTPException(status_code=400, detail="Missing required parameters")
@@ -1115,7 +1138,11 @@ async def update_voice_prompt(request: Request):
         )
     else:
         knowledge.update_character_voice(
-            char.name_en, voice_description=voice_description, voice_control_prompt=control
+            char.name_en,
+            voice_description=voice_description,
+            voice_control_prompt=control,
+            slot=voice_slot,
+            from_chapter=from_chapter,
         )
 
     knowledge_mgr.save(knowledge)
