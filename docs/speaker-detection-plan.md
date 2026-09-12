@@ -317,7 +317,7 @@ Chapter 169, per detection run:
 The registry costs 1.79x what the content costs. Free on the local Ollama this
 was measured on, and the first thing to fix if detection ever runs against a
 paid endpoint. `_scoped_registry` already trims by chapters seen; the larger win
-is that five of the fourteen entries carry chapter-specific commentary from the
+is that seven of the fourteen entries carry chapter-specific commentary from the
 `--extract` run ("Not present in this chapter. Mentioned as..."), which is both
 bloat and misleading input on every other chapter.
 
