@@ -223,6 +223,56 @@ about capability.
 from one tuned on this chapter. A held-out set -- ideally a chapter of the
 series actually being produced -- is needed before trusting an absolute figure.
 
+## Held-out measurement
+
+Chapter 68 of `novel-mypossessionbecameaghoststory`, a series in production and
+not the chapter any prompt was tuned against. qwen3.8 on a local Ollama, single
+model, no agreement gate. Every spoken line reviewed by a human through the
+review page, so this is 45 labels rather than a spot check:
+
+| | |
+| --- | --- |
+| spoken lines | 45 |
+| right | 42 |
+| wrong | 3 |
+| **accuracy** | **93.3%** |
+
+**What this does and does not measure.** The prompt is genuinely held out --
+it derives from chapter 164 of a different series. The registry is not: it was
+built by `--extract` on chapter 68 itself, and its `narration_note` spells out
+that chapter's mid-chapter POV shift and names the first-person narrator
+outright. So 93.3% is the accuracy of *prompt on unseen text, with a registry
+extracted from that text*, which is the configuration the pipeline actually
+runs. It is not a measurement of transfer to a chapter the registry has never
+seen.
+
+Chapter 68 is now burned for future runs -- detection has been re-run on it, and
+its labels informed the analysis below.
+
+### The remaining errors are one class
+
+All three misses are a two-line exchange where the narrator speaks first and
+another character answers. The model gave the narrator's line to whichever
+character was named in the adjacent narration:
+
+| line | next line | name in nearby narration | attributed to |
+| --- | --- | --- | --- |
+| 2 | 3 | มาดามโทเทน | มาดามโทเทน |
+| 7 | 8, Toten answering | เดซี่ | เดซี่ |
+| 81 | 80 names Daisy | เดซี่ | เดซี่ |
+
+The narrator is the one character never named in the prose, because she is
+`ฉัน`, so proximity to a name pulls every unattributed line away from her. This
+is the same failure as the 87% run on chapter 164 and the same as the errors the
+curated registry fixed there -- registry curation raised it from 70% to 83% but
+did not remove it, and here the registry is already correct: `เอวานเจลีน` is
+flagged narrator and the narration note is explicit.
+
+In all three cases the *reply* was attributed correctly. Turn-taking -- adjacent
+dialogue lines alternate unless the text says otherwise -- would have resolved
+every one. That is the next thing to try, and it must be validated on a chapter
+other than 68.
+
 ## Risks
 
 **Attribution quality depends on a registry we do not curate.** VoxNovel builds
