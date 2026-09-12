@@ -249,6 +249,33 @@ seen.
 Chapter 68 is now burned for future runs -- detection has been re-run on it, and
 its labels informed the analysis below.
 
+### Does the registry transfer?
+
+Chapter 169, a different arc of the same series, run with the registry built
+from chapter 68 and no `--extract`. Reviewed the same way:
+
+| | chapter 68 | chapter 169 |
+| --- | --- | --- |
+| spoken lines | 45 | 49 |
+| right | 42 | 49 |
+| wrong | 3 | 0 |
+| accuracy | 93.3% | 100% |
+
+Combined, 91 of 94 spoken lines across two arcs: 96.8%.
+
+**One extraction per series is enough.** That was the open question, and the
+answer decides real money -- per-chapter extraction would have roughly doubled
+the LLM calls per chapter. A registry built from one chapter lost nothing on a
+chapter it had never seen.
+
+Read the 100% as "no worse than 93.3%", not as a ceiling. It is one chapter,
+n=49, and no line was corrected, so nothing in the run distinguishes a perfect
+model from a fast review. The transfer conclusion holds under either reading,
+which is why it is the part worth acting on.
+
+The narrator leak below did not recur here: `เอวานเจลีน` narrates chapter 169 and
+none of her nine spoken lines went astray.
+
 ### The remaining errors are one class
 
 All three misses are a two-line exchange where the narrator speaks first and
@@ -270,8 +297,29 @@ flagged narrator and the narration note is explicit.
 
 In all three cases the *reply* was attributed correctly. Turn-taking -- adjacent
 dialogue lines alternate unless the text says otherwise -- would have resolved
-every one. That is the next thing to try, and it must be validated on a chapter
-other than 68.
+every one.
+
+Left unfixed for now. Chapter 169 showed the leak does not always happen, so
+changing the prompt against three errors on one chapter risks fitting to them.
+A third chapter exhibiting it is the trigger.
+
+### Cost, measured
+
+Chapter 169, per detection run:
+
+| | chars |
+| --- | --- |
+| chapter text | 12,362 |
+| registry block, resent per chunk | 5,532 |
+| chunks | 4 |
+| registry total | 22,128 |
+
+The registry costs 1.79x what the content costs. Free on the local Ollama this
+was measured on, and the first thing to fix if detection ever runs against a
+paid endpoint. `_scoped_registry` already trims by chapters seen; the larger win
+is that five of the fourteen entries carry chapter-specific commentary from the
+`--extract` run ("Not present in this chapter. Mentioned as..."), which is both
+bloat and misleading input on every other chapter.
 
 ## Risks
 
