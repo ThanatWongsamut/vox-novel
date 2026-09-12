@@ -828,6 +828,10 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
     attributed = sum(1 for p in chapter.paragraphs if p.speaker)
     spoken = sum(1 for p in chapter.paragraphs if p.speech_type in ("dialogue", "thought"))
     verified = sum(1 for p in chapter.paragraphs if p.speaker_verified)
+    unreviewed = sum(
+        1 for p in chapter.paragraphs
+        if p.speech_type in ("dialogue", "thought") and not p.speaker_verified
+    )
     score = score_attribution(chapter)
 
     return templates.TemplateResponse(
@@ -841,6 +845,7 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
             "attributed": attributed,
             "spoken": spoken,
             "verified": verified,
+            "unreviewed": unreviewed,
             "score": score,
             "lang": lang,
         },
@@ -888,6 +893,47 @@ async def update_speaker(request: Request):
         "paragraph": index,
         "speaker": target.speaker,
         "detected": target.speaker_detected,
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
+
+
+@web_app.post("/api/speakers/verify-rest")
+async def verify_remaining_speakers(request: Request):
+    """Mark every unreviewed spoken line in a chapter as correct as detected.
+
+    A read-through only produces labels for the lines a reviewer *changed* --
+    the ones detection got right are never touched, so a chapter read end to end
+    scores on a handful of paragraphs, all of them errors. This is the other
+    half of the verdict: everything left is correct.
+
+    Only offered as a bulk action after reading the chapter, and it never
+    overwrites an existing verdict.
+    """
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    confirmed = []
+    for p in chapter.paragraphs:
+        if p.speaker_verified or p.speech_type not in ("dialogue", "thought"):
+            continue
+        p.speaker_verified = True
+        confirmed.append(p.index)
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    score = score_attribution(chapter)
+    return {
+        "status": "ok",
+        "confirmed": len(confirmed),
         "score": {
             "scored": score["scored"],
             "correct": score["correct"],

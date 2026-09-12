@@ -36,6 +36,13 @@
         <input type="checkbox" id="only-spoken" class="accent-indigo-500" checked>
         Only spoken lines
       </label>
+      <button id="verify-rest" type="button"
+              data-remaining="{{ unreviewed }}"
+              class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white text-[11px]
+                     rounded-lg transition disabled:opacity-40"
+              {% if not unreviewed %}hidden{% endif %}>
+        Rest are correct ({{ unreviewed }})
+      </button>
       <a href="/series/{{ chapter.book_id }}/read/{{ chapter.id }}"
          class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-[11px] rounded-lg transition">
         Read
@@ -254,6 +261,48 @@
   document.querySelectorAll('.para-row').forEach(row => {
     row.querySelectorAll('select').forEach(el => {
       el.addEventListener('change', () => save(row));
+    });
+  });
+
+  // Correcting a line is the only thing that marks it reviewed, so a chapter
+  // read end to end scores on its errors alone. This records the other half of
+  // the verdict: everything left is right. Two clicks, because it writes a
+  // judgement onto every remaining line at once.
+  const verifyRest = document.getElementById('verify-rest');
+  let armed = false;
+  verifyRest.addEventListener('click', async () => {
+    const remaining = Number(verifyRest.dataset.remaining);
+    if (!armed) {
+      armed = true;
+      verifyRest.textContent = `Confirm all ${remaining}?`;
+      verifyRest.classList.add('bg-amber-600', 'hover:bg-amber-500');
+      setTimeout(() => {
+        if (!armed) return;
+        armed = false;
+        verifyRest.textContent = `Rest are correct (${remaining})`;
+        verifyRest.classList.remove('bg-amber-600', 'hover:bg-amber-500');
+      }, 4000);
+      return;
+    }
+
+    armed = false;
+    verifyRest.disabled = true;
+    const res = await fetch('/api/speakers/verify-rest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ series_id: seriesId, chapter_id: chapterId }),
+    });
+    if (!res.ok) {
+      verifyRest.textContent = 'Failed';
+      return;
+    }
+    const payload = await res.json();
+    renderScore(payload.score);
+    verifyRest.hidden = true;
+    document.querySelectorAll('.para-row[data-spoken="yes"]').forEach(row => {
+      row.className = row.className
+        .replace(/bg-slate-900\/60|bg-transparent/, 'bg-emerald-950/25')
+        .replace(/border-slate-700|border-transparent/, 'border-emerald-600/30');
     });
   });
 })();

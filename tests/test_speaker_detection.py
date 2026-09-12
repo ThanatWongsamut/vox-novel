@@ -549,6 +549,41 @@ class TestReviewEndpoint(unittest.TestCase):
         self.assertEqual(score["wrong"], 1)
         self.assertEqual(score["accuracy"], 0.0)
 
+    def test_confirming_the_rest_marks_every_unreviewed_spoken_line(self):
+        # A read-through only records the lines a reviewer changed, so without
+        # this a chapter scores on its errors alone.
+        chap = self.saved()
+        chap.paragraphs[0].speech_type = "dialogue"
+        chap.paragraphs[0].speaker = "พุดดิ้ง"
+        chap.paragraphs[0].speaker_detected = "พุดดิ้ง"
+        chap.paragraphs[1].speaker_detected = "ริโก้"
+        self.web.storage.save_chapter(chap)
+
+        res = self.client.post(
+            "/api/speakers/verify-rest", json={"series_id": "b", "chapter_id": "1"}
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["confirmed"], 2)
+        self.assertEqual(res.json()["score"], {
+            "scored": 2, "correct": 2, "wrong": 0, "accuracy": 1.0,
+        })
+
+        saved = self.saved()
+        self.assertTrue(saved.paragraphs[0].speaker_verified)
+        self.assertTrue(saved.paragraphs[1].speaker_verified)
+        self.assertFalse(saved.paragraphs[2].speaker_verified, "narration was verified")
+
+    def test_confirming_the_rest_does_not_overwrite_a_correction(self):
+        self.update(speaker="พุดดิ้ง")
+        self.client.post("/api/speakers/verify-rest", json={"series_id": "b", "chapter_id": "1"})
+        self.assertEqual(self.saved().paragraphs[1].speaker, "พุดดิ้ง")
+
+    def test_confirming_the_rest_rejects_a_traversing_id(self):
+        res = self.client.post(
+            "/api/speakers/verify-rest", json={"series_id": "../evil", "chapter_id": "1"}
+        )
+        self.assertEqual(res.status_code, 400)
+
     def test_the_page_shows_the_score(self):
         chap = self.saved()
         chap.paragraphs[1].speaker_detected = "ริโก้"
