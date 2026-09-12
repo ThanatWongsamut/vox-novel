@@ -330,7 +330,7 @@ async def _annotate_chunk(
             stored = knowledge.find_character(draft.name)
             if stored is not None:
                 stored.speech_style = draft.speech_style or None
-                stored.first_seen_chapter = chapter_id if hasattr(stored, "first_seen_chapter") else None
+                stored.last_seen_chapter = chapter_id
 
     _register_unseen(result.segments, knowledge, chapter_id)
 

@@ -241,6 +241,31 @@ class TestRegistryFailureModes(unittest.TestCase):
         asyncio.run(annotate_chapter(chap, k, t))
         self.assertIsNotNone(k.find_character("พุดดิ้ง"), "the registry froze")
 
+    def test_a_character_declared_in_new_characters_is_registered(self):
+        """The other registration path: the model fills new_characters properly.
+
+        Only the `speaker`-field path was covered before, so a broken write on
+        this one aborted a whole chapter with the suite still green.
+        """
+        chap, k = chapter(1), knowledge_with("ริโก้")
+        t = FakeTranslator(
+            ChunkAnnotation(
+                segments=[seg(1, "dialogue", "มาดามโทเทน")],
+                new_characters=[
+                    CharacterDraft(
+                        name="มาดามโทเทน", gender="female",
+                        speech_style="สุภาพ", description="หัวหน้าแม่บ้าน",
+                    )
+                ],
+            )
+        )
+        asyncio.run(annotate_chapter(chap, k, t, progress_callback=None))
+        stored = k.find_character("มาดามโทเทน")
+        self.assertIsNotNone(stored, "a declared character was not registered")
+        self.assertEqual(stored.speech_style, "สุภาพ")
+        self.assertEqual(stored.last_seen_chapter, "1")
+        self.assertEqual(chap.paragraphs[0].speaker, "มาดามโทเทน")
+
     def test_a_corrupted_spelling_folds_onto_one_character(self):
         # Models occasionally emit Thai names with stray CJK tokens. Left alone,
         # one character is split across several voices.
