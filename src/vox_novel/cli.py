@@ -647,6 +647,18 @@ def detect_speakers_cmd(
             for a, b in result["near_duplicates"][:10]:
                 console.print(f"  {a}  ~  {b}")
 
+        score = result.get("score") or {}
+        if score.get("scored"):
+            pct = score["accuracy"] * 100
+            colour = "green" if pct >= 90 else "yellow" if pct >= 75 else "red"
+            console.print(
+                f"[bold {colour}]Scored {pct:.1f}%[/bold {colour}] against "
+                f"{score['scored']} human-verified spoken line(s) "
+                f"({score['correct']} right, {score['wrong']} wrong)."
+            )
+            for m in score.get("misses", [])[:10]:
+                console.print(f"  [{m['paragraph']}] {m['detected'] or '—'}  →  {m['truth'] or '—'}")
+
     asyncio.run(_run())
 
 

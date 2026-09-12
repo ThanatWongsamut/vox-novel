@@ -4,7 +4,11 @@ import unittest
 from vox_novel.models.domain import Chapter, Paragraph
 from vox_novel.models.series_knowledge import SeriesKnowledge
 from vox_novel.speaker.chunking import format_chunk, make_chunks
-from vox_novel.speaker.detector import annotate_chapter, extract_registry
+from vox_novel.speaker.detector import (
+    annotate_chapter,
+    extract_registry,
+    score_attribution,
+)
 from vox_novel.speaker.models import (
     CharacterDraft,
     ChunkAnnotation,
@@ -518,6 +522,136 @@ class TestReviewEndpoint(unittest.TestCase):
 
     def test_a_non_numeric_paragraph_is_rejected(self):
         self.assertEqual(self.update(paragraph="two").status_code, 400)
+
+    def test_a_correction_does_not_erase_what_the_model_guessed(self):
+        # Overwriting the guess makes the review unscoreable after the fact,
+        # which defeats the point of reviewing.
+        chap = self.saved()
+        chap.paragraphs[1].speaker_detected = "ริโก้"
+        chap.paragraphs[1].speech_type_detected = "dialogue"
+        self.web.storage.save_chapter(chap)
+
+        self.update(speaker="พุดดิ้ง")
+        p = self.saved().paragraphs[1]
+        self.assertEqual(p.speaker, "พุดดิ้ง")
+        self.assertEqual(p.speaker_detected, "ริโก้")
+        self.assertEqual(p.speech_type_detected, "dialogue")
+
+    def test_the_response_carries_the_running_score(self):
+        # The page saves without reloading, so a stale score would be wrong from
+        # the first click.
+        chap = self.saved()
+        chap.paragraphs[1].speaker_detected = "ริโก้"
+        self.web.storage.save_chapter(chap)
+
+        score = self.update(speaker="พุดดิ้ง").json()["score"]
+        self.assertEqual(score["scored"], 1)
+        self.assertEqual(score["wrong"], 1)
+        self.assertEqual(score["accuracy"], 0.0)
+
+    def test_the_page_shows_the_score(self):
+        chap = self.saved()
+        chap.paragraphs[1].speaker_detected = "ริโก้"
+        chap.paragraphs[1].speaker_verified = True
+        self.web.storage.save_chapter(chap)
+
+        res = self.client.get("/series/b/speakers/1")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertIn("Scored against your corrections", res.text)
+
+
+class TestScoring(unittest.TestCase):
+    """Scoring is the reason the guess is kept alongside the human's verdict."""
+
+    def build(self, *rows):
+        chap = chapter(len(rows))
+        for para, (verified, truth, detected, type_) in zip(chap.paragraphs, rows):
+            para.speaker_verified = verified
+            para.speaker = truth
+            para.speech_type = type_
+            para.speaker_detected = detected
+            para.speech_type_detected = type_ if detected is not None else None
+        return chap
+
+    def test_only_verified_spoken_lines_count(self):
+        score = score_attribution(self.build(
+            (True, "ริโก้", "ริโก้", "dialogue"),      # hit
+            (True, "ริโก้", "พุดดิ้ง", "dialogue"),     # miss
+            (False, "ริโก้", "พุดดิ้ง", "dialogue"),    # unreviewed, ignored
+            (True, None, None, "narration"),           # narration, ignored
+        ))
+        self.assertEqual((score["scored"], score["correct"], score["wrong"]), (2, 1, 1))
+        self.assertEqual(score["accuracy"], 0.5)
+        self.assertEqual([m["paragraph"] for m in score["misses"]], [2])
+
+    def test_narration_is_excluded_by_the_human_verdict_not_the_guess(self):
+        # A line the model called narration but a human called dialogue is a
+        # real miss; keying on the guess would hide it.
+        score = score_attribution(self.build(
+            (True, "ริโก้", None, "dialogue"),
+        ))
+        self.assertEqual(score["scored"], 0, "no guess was recorded, so nothing to score")
+
+        chap = self.build((True, "ริโก้", None, "dialogue"))
+        chap.paragraphs[0].speech_type_detected = "narration"
+        score = score_attribution(chap)
+        self.assertEqual((score["scored"], score["wrong"]), (1, 1))
+
+    def test_a_line_reviewed_before_the_guess_was_kept_is_unscoreable(self):
+        # Not a hit and not a miss -- counting it either way would be a lie
+        # about a measurement that no longer exists.
+        score = score_attribution(self.build((True, "ริโก้", None, "dialogue")))
+        self.assertEqual(score["scored"], 0)
+        self.assertEqual(score["unscoreable"], [1])
+        self.assertIsNone(score["accuracy"])
+
+    def test_an_unattributed_correction_does_not_count_as_agreement(self):
+        # Both sides empty is two absences, not a match.
+        chap = self.build((True, None, None, "dialogue"))
+        chap.paragraphs[0].speech_type_detected = "dialogue"
+        score = score_attribution(chap)
+        self.assertEqual((score["scored"], score["wrong"]), (1, 1))
+
+    def test_names_compare_case_and_space_insensitively(self):
+        score = score_attribution(self.build((True, " Rico ", "rico", "dialogue")))
+        self.assertEqual(score["correct"], 1)
+
+
+class TestVerifiedLinesSurviveARerun(unittest.TestCase):
+    """A re-run must not undo a human's labels, or reviewing is wasted work."""
+
+    def run_annotation(self, chap, k, segments):
+        translator = FakeTranslator(ChunkAnnotation(segments=segments, new_characters=[]))
+        return asyncio.run(annotate_chapter(chap, k, translator))
+
+    def test_a_verified_line_keeps_its_speaker_but_records_the_new_guess(self):
+        chap = chapter(2)
+        chap.paragraphs[0].speech_type = "dialogue"
+        chap.paragraphs[0].speaker = "พุดดิ้ง"
+        chap.paragraphs[0].speaker_verified = True
+
+        k = knowledge_with("ริโก้", "พุดดิ้ง")
+        self.run_annotation(chap, k, [seg(1, speaker="ริโก้"), seg(2, speaker="ริโก้")])
+
+        kept = chap.paragraphs[0]
+        self.assertEqual(kept.speaker, "พุดดิ้ง", "a re-run overwrote a human label")
+        self.assertEqual(kept.speaker_detected, "ริโก้")
+        self.assertTrue(kept.speaker_verified)
+        self.assertEqual(chap.paragraphs[1].speaker, "ริโก้", "an unverified line was skipped")
+
+    def test_the_score_reflects_the_new_run_not_the_one_that_made_the_labels(self):
+        chap = chapter(2)
+        for para in chap.paragraphs:
+            para.speech_type = "dialogue"
+            para.speaker = "พุดดิ้ง"
+            para.speaker_verified = True
+            para.speaker_detected = "พุดดิ้ง"  # the previous run was right
+
+        k = knowledge_with("ริโก้", "พุดดิ้ง")
+        self.run_annotation(chap, k, [seg(1, speaker="ริโก้"), seg(2, speaker="พุดดิ้ง")])
+
+        score = score_attribution(chap)
+        self.assertEqual((score["scored"], score["correct"], score["wrong"]), (2, 1, 1))
 
 
 if __name__ == "__main__":

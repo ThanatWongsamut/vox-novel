@@ -209,7 +209,11 @@ class NovelPipeline:
         re-translating -- which matters because attribution accuracy depends on a
         registry the user is expected to curate between runs.
         """
-        from vox_novel.speaker.detector import annotate_chapter, extract_registry
+        from vox_novel.speaker.detector import (
+            annotate_chapter,
+            extract_registry,
+            score_attribution,
+        )
 
         chapter = self.storage.get_chapter(series_id, chapter_id)
         if not chapter:
@@ -250,6 +254,9 @@ class NovelPipeline:
 
         result["registry_added"] = added
         result["near_duplicates"] = knowledge.near_duplicate_characters()
+        # Verified lines survive a re-run, so scoring against them measures this
+        # run rather than the one that produced the labels.
+        result["score"] = score_attribution(chapter)
         return result
 
     @staticmethod

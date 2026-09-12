@@ -18,6 +18,11 @@ class Paragraph(BaseModel):
     # leaves it False, so a re-run can overwrite its own guesses without
     # discarding reviewed lines -- and a verified set doubles as gold labels.
     speaker_verified: bool = False
+    # What detection guessed, kept even after a human corrects `speaker`.
+    # Without it a review destroys the evidence needed to score the model, which
+    # is the whole point of reviewing; with it, verified lines are a gold set.
+    speaker_detected: Optional[str] = None
+    speech_type_detected: Optional[str] = None
 
 
 class Chapter(BaseModel):

@@ -152,8 +152,20 @@ def _apply(
         if paragraph is None:
             # A number the model invented, or one from the context block.
             continue
+
+        speaker = None if seg.type == "narration" else seg.speaker
+        # Always record what the model said, even where a human has already
+        # corrected the line: that pairing is what makes a review scoreable.
+        paragraph.speech_type_detected = seg.type
+        paragraph.speaker_detected = speaker
+
+        if paragraph.speaker_verified:
+            # A human already ruled on this line. Re-running detection must not
+            # undo that, or a second run silently destroys the labels.
+            continue
+
         paragraph.speech_type = seg.type
-        paragraph.speaker = None if seg.type == "narration" else seg.speaker
+        paragraph.speaker = speaker
         applied += 1
 
         if paragraph.speaker and paragraph.speaker.upper() != "UNKNOWN":
@@ -346,3 +358,60 @@ async def _report(progress_callback, n: int, total: int, label: str = "") -> Non
     result = progress_callback(int(n / max(total, 1) * 100), f"{what} ({n}/{total})...")
     if inspect.isawaitable(result):
         await result
+
+
+def score_attribution(chapter: Chapter) -> Dict[str, Any]:
+    """Score detection against the lines a human has verified.
+
+    Only paragraphs carrying both a human verdict and the model's own guess can
+    be scored; a line reviewed before `speaker_detected` existed has lost the
+    guess and is counted as unscoreable rather than as a hit or a miss.
+
+    Scored on spoken lines only. Narration dominates a chapter three to one and
+    is nearly always right, so including it inflates the number past the point
+    of usefulness -- what matters is whether a voice change lands on the right
+    character.
+    """
+    hits: List[int] = []
+    misses: List[Dict[str, Any]] = []
+    unscoreable: List[int] = []
+
+    for p in chapter.paragraphs:
+        if not p.speaker_verified:
+            continue
+        # The human's verdict, not the guess, decides whether this is a spoken
+        # line -- otherwise a wrongly-typed narration line escapes scoring.
+        if p.speech_type not in ("dialogue", "thought"):
+            continue
+        if p.speaker_detected is None and p.speech_type_detected is None:
+            unscoreable.append(p.index)
+            continue
+
+        if _same_speaker(p.speaker, p.speaker_detected):
+            hits.append(p.index)
+        else:
+            misses.append({
+                "paragraph": p.index,
+                "truth": p.speaker,
+                "detected": p.speaker_detected,
+                "detected_type": p.speech_type_detected,
+            })
+
+    scored = len(hits) + len(misses)
+    return {
+        "scored": scored,
+        "correct": len(hits),
+        "wrong": len(misses),
+        "accuracy": (len(hits) / scored) if scored else None,
+        "misses": misses,
+        "unscoreable": unscoreable,
+    }
+
+
+def _same_speaker(truth: Optional[str], detected: Optional[str]) -> bool:
+    """Compare two speaker labels the way the voice path would resolve them."""
+    a = (truth or "").strip().lower()
+    b = (detected or "").strip().lower()
+    # UNKNOWN is the model declining to attribute, which is not the same as a
+    # narration line even though both end up in the narrator's voice.
+    return a == b and a != ""

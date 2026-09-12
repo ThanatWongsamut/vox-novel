@@ -27,7 +27,8 @@
       <p class="text-[11px] text-slate-400">
         {{ chapter.paragraphs|length }} paragraphs ·
         <span class="text-cyan-400">{{ spoken }}</span> spoken ·
-        <span class="text-emerald-400">{{ attributed }}</span> attributed
+        <span class="text-emerald-400">{{ attributed }}</span> attributed ·
+        <span class="text-emerald-400">{{ verified }}</span> verified
       </p>
     </div>
     <div class="flex items-center gap-2 shrink-0">
@@ -40,6 +41,43 @@
         Read
       </a>
     </div>
+  </div>
+
+  <div id="score-panel" class="mb-4 p-3 bg-slate-900/70 border border-slate-700 rounded-xl"
+       data-unscoreable="{{ 'yes' if score.unscoreable else 'no' }}">
+    <div class="flex items-baseline gap-3 flex-wrap">
+      <p class="text-[11px] font-semibold text-slate-200">
+        <i class="fa-solid fa-bullseye"></i> Scored against your corrections
+      </p>
+      <span id="score-pct" class="text-lg font-bold"
+            {% if score.accuracy is none %}hidden{% endif %}></span>
+      <span id="score-detail" class="text-[11px] text-slate-400"></span>
+    </div>
+    {% if score.unscoreable %}
+    <p class="text-[10px] text-slate-500 mt-1">
+      {{ score.unscoreable|length }} verified line(s) cannot be scored — they were
+      reviewed before the model's own guess was recorded, so there is nothing to
+      compare against. Re-running detection restores the guess without touching
+      your labels.
+    </p>
+    {% endif %}
+    {% if score.misses %}
+    <details class="mt-2">
+      <summary class="text-[11px] text-slate-400 cursor-pointer hover:text-slate-200">
+        Show the {{ score.misses|length }} it got wrong
+      </summary>
+      <div class="mt-1.5 space-y-0.5">
+        {% for m in score.misses %}
+        <div class="text-[10px] font-mono text-slate-400">
+          <span class="text-slate-500">{{ m.paragraph }}</span>
+          <span class="text-red-400">{{ m.detected or '—' }}</span>
+          <span class="text-slate-600">→</span>
+          <span class="text-emerald-400">{{ m.truth or '—' }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
   </div>
 
   {% if narration_note %}
@@ -93,6 +131,11 @@
                   {% if spoken_line %}text-slate-100{% else %}text-slate-400{% endif %}">
           {{ p.translated_text or p.text }}
         </p>
+        {% if p.speaker_verified and p.speaker_detected != p.speaker %}
+        <p class="text-[10px] text-slate-500 mt-0.5">
+          model said <span class="text-red-400/80 font-mono">{{ p.speaker_detected or 'narration' }}</span>
+        </p>
+        {% endif %}
       </div>
 
       <div class="flex items-center gap-1.5 shrink-0">
@@ -131,6 +174,34 @@
   const seriesId = {{ chapter.book_id | tojson }};
   const chapterId = {{ chapter.id | tojson }};
 
+  // Server-rendered, then kept current by each save -- corrections post without
+  // a reload, so a static number would be wrong from the first click.
+  function renderScore(score) {
+    const panel = document.getElementById('score-panel');
+    const pct = document.getElementById('score-pct');
+    const detail = document.getElementById('score-detail');
+    const hasUnscoreable = panel.dataset.unscoreable === 'yes';
+
+    panel.hidden = !score.scored && !hasUnscoreable;
+    pct.hidden = score.accuracy === null;
+    if (score.accuracy === null) {
+      detail.textContent = '';
+      return;
+    }
+    pct.textContent = (score.accuracy * 100).toFixed(1) + '%';
+    pct.className = 'text-lg font-bold ' + (
+      score.accuracy >= 0.9 ? 'text-emerald-400'
+        : score.accuracy >= 0.75 ? 'text-amber-400' : 'text-red-400');
+    detail.textContent = `${score.correct} right · ${score.wrong} wrong · `
+      + `of ${score.scored} spoken lines you verified`;
+  }
+  renderScore({
+    scored: {{ score.scored | tojson }},
+    correct: {{ score.correct | tojson }},
+    wrong: {{ score.wrong | tojson }},
+    accuracy: {{ score.accuracy | tojson }},
+  });
+
   function applyFilter() {
     const only = document.getElementById('only-spoken').checked;
     document.querySelectorAll('.para-row').forEach(row => {
@@ -167,6 +238,9 @@
       tick.classList.add('text-red-400');
       return;
     }
+
+    const payload = await res.json();
+    if (payload.score) renderScore(payload.score);
 
     row.dataset.spoken = speechType === 'narration' ? 'no' : 'yes';
     row.className = row.className

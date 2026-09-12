@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from vox_novel.models.domain import Novel, Chapter, ChapterSummary, Paragraph
 from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.scrapers.readtoon import classify_speech_type
+from vox_novel.speaker.detector import score_attribution
 from vox_novel.storage.file import (
     StorageManager,
     UnsafePathSegment,
@@ -826,6 +827,8 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
     )
     attributed = sum(1 for p in chapter.paragraphs if p.speaker)
     spoken = sum(1 for p in chapter.paragraphs if p.speech_type in ("dialogue", "thought"))
+    verified = sum(1 for p in chapter.paragraphs if p.speaker_verified)
+    score = score_attribution(chapter)
 
     return templates.TemplateResponse(
         request=request,
@@ -837,6 +840,8 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
             "near_duplicates": knowledge.near_duplicate_characters(),
             "attributed": attributed,
             "spoken": spoken,
+            "verified": verified,
+            "score": score,
             "lang": lang,
         },
     )
@@ -875,7 +880,21 @@ async def update_speaker(request: Request):
     target.speaker_verified = True
 
     await asyncio.to_thread(storage.save_chapter, chapter, True)
-    return {"status": "ok", "paragraph": index, "speaker": target.speaker}
+    # The review page saves without reloading, so it needs the running score
+    # back or its accuracy readout goes stale the moment a correction lands.
+    score = score_attribution(chapter)
+    return {
+        "status": "ok",
+        "paragraph": index,
+        "speaker": target.speaker,
+        "detected": target.speaker_detected,
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
 
 
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
