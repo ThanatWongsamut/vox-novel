@@ -9,11 +9,20 @@ class Paragraph(BaseModel):
     text: str
     translated_text: Optional[str] = None
     audio_path: Optional[str] = None
-    # e.g. "narrator" or a character name. Not populated yet -- the TTS engine's
-    # per-character voice path reads it and stays inert until something does.
+    # A character name, or None for narration. Assigned by speaker detection
+    # and read by the TTS engine to pick a voice.
     speaker: Optional[str] = None
     emotion: Optional[str] = None  # e.g. "calm", "angry", "fearful", "whisper", "urgent"
-    speech_type: Optional[str] = None  # "narration" or "dialogue"
+    speech_type: Optional[str] = None  # "narration", "dialogue" or "thought"
+    # True once a human has confirmed or corrected the attribution. Detection
+    # leaves it False, so a re-run can overwrite its own guesses without
+    # discarding reviewed lines -- and a verified set doubles as gold labels.
+    speaker_verified: bool = False
+    # What detection guessed, kept even after a human corrects `speaker`.
+    # Without it a review destroys the evidence needed to score the model, which
+    # is the whole point of reviewing; with it, verified lines are a gold set.
+    speaker_detected: Optional[str] = None
+    speech_type_detected: Optional[str] = None
 
 
 class Chapter(BaseModel):

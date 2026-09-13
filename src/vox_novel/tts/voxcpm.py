@@ -965,8 +965,21 @@ class VoxCPM2TTS(BaseTTS):
             progress_callback=progress_callback,
         )
 
+    #: Spoken while generating an anchor. Not heard in the audiobook -- the clip
+    #: exists only so later paragraphs have a timbre to clone from.
+    ANCHOR_SAMPLE_NARRATOR = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
+    ANCHOR_SAMPLE_CHARACTER = "นี่คือเสียงพูดของตัวละครตัวนี้ สำหรับการอ่านออกเสียงภาษาไทย"
+
     async def _narrator_anchor(self, voices_dir: Path, description: str, control: str) -> Path:
-        """Return the reference clip for this narrator voice, generating it if absent.
+        """The narrator's reference clip. See `_voice_anchor`."""
+        return await self._voice_anchor(
+            voices_dir, "narrator_ref", description, control, self.ANCHOR_SAMPLE_NARRATOR
+        )
+
+    async def _voice_anchor(
+        self, voices_dir: Path, stem: str, description: str, control: str, sample_text: str
+    ) -> Path:
+        """Return the reference clip for this voice, generating it if absent.
 
         The filename is derived from the control prompt, so an anchor is immutable:
         a different voice is a different file. That removes a whole class of problem
@@ -975,18 +988,23 @@ class VoxCPM2TTS(BaseTTS):
         user upload, two concurrent jobs racing on one path, and a per-chapter copy
         taken to defend against that race. A one-off `--voice` run now gets its own
         file instead of re-rolling the series narrator.
+
+        Characters get one on the same terms. A described character without a clip
+        used to clone from the narrator anchor, so the reference -- which is what
+        actually carries timbre -- was the narrator's and the description changed
+        almost nothing. Every distinct voice needs its own anchor or they all sound
+        like the narrator.
         """
         voices_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256((control or "").encode("utf-8")).hexdigest()[:8]
-        anchor = voices_dir / f"narrator_ref.{digest}.wav"
+        anchor = voices_dir / f"{stem}.{digest}.wav"
         if anchor.exists() and anchor.stat().st_size > 0:
             return anchor
 
-        logger.info(f"Generating narrator reference voice anchor ({digest})...")
-        sample_text = "นี่คือเสียงผู้บรรยายประจำนิยายเรื่องนี้ สำหรับการอ่านออกเสียงภาษาไทย"
+        logger.info(f"Generating reference voice anchor {stem} ({digest})...")
         # sf.write is not atomic, so build aside and link into place.
         fd, staging_name = tempfile.mkstemp(
-            dir=voices_dir, prefix=f"narrator_ref.{digest}.", suffix=".partial.wav"
+            dir=voices_dir, prefix=f"{stem}.{digest}.", suffix=".partial.wav"
         )
         os.close(fd)
         staging = Path(staging_name)
@@ -1008,16 +1026,16 @@ class VoxCPM2TTS(BaseTTS):
                 # loser simply uses that file -- the voices are interchangeable.
                 os.link(staging, anchor)
             except FileExistsError:
-                logger.debug(f"Narrator anchor {digest} was created concurrently; using it.")
+                logger.debug(f"Anchor {stem} {digest} was created concurrently; using it.")
             except OSError as e:
                 # Hard links are unsupported on exFAT/FAT32 and some network mounts.
                 # Re-check first: a rename would overwrite an anchor a concurrent
                 # chapter is already cloning from, which is what os.link avoids.
                 if anchor.exists() and anchor.stat().st_size > 0:
-                    logger.debug(f"Narrator anchor {digest} already present; using it.")
+                    logger.debug(f"Anchor {stem} {digest} already present; using it.")
                 else:
                     logger.warning(
-                        f"Could not link the narrator anchor ({e}); renaming instead."
+                        f"Could not link the {stem} anchor ({e}); renaming instead."
                     )
                     os.replace(staging, anchor)
         finally:
@@ -1059,44 +1077,60 @@ class VoxCPM2TTS(BaseTTS):
             para_ref_audio = effective_narrator_ref
             para_emotion = p.emotion
 
-            # Per-character voices. Inert for now: nothing assigns Paragraph.speaker,
-            # so this branch, control_by_speaker and the emotion suffix never run.
-            # Speaker detection is a separate change; this is kept wired and tested
-            # so it works the moment paragraphs carry a speaker.
+            # Per-character voices. Attribution assigns Paragraph.speaker, so this
+            # branch, control_by_speaker and the emotion suffix are live.
             if knowledge and p.speaker and p.speaker.strip().lower() not in ("narrator", "ผู้บรรยาย"):
                 char = knowledge.find_character(p.speaker)
                 if char:
-                    # Check if character has dedicated reference audio anchor
+                    # A character can have two voices -- a body swap or a
+                    # possession -- in which case only their spoken lines are
+                    # heard as the body and their thoughts stay their own.
+                    choice = char.voice_for(p.speech_type, chapter.chapter_number)
+                    voices_dir = output_dir.parent / "voices"
+                    # Use the shared helper: it strips path separators, which a
+                    # bare whitespace regex does not. Character names can come
+                    # from the LLM auto-learn path.
+                    safe_k = character_voice_key(choice.slug)
+
+                    # An uploaded clip outranks anything generated from a
+                    # description, here and in the Voice Studio.
                     char_ref = None
-                    if char.voice_ref_audio and Path(char.voice_ref_audio).exists():
-                        char_ref = Path(char.voice_ref_audio)
+                    if choice.ref_audio and Path(choice.ref_audio).exists():
+                        char_ref = Path(choice.ref_audio)
                     else:
-                        voices_dir = output_dir.parent / "voices"
-                        # Use the shared helper: it strips path separators, which a
-                        # bare whitespace regex does not. Character names can come
-                        # from the LLM auto-learn path.
-                        safe_k = character_voice_key(char.name_en)
                         for ext in [".wav", ".mp3", ".m4a", ".flac"]:
                             cand = voices_dir / f"{safe_k}_ref{ext}"
                             if cand.exists() and cand.stat().st_size > 0:
                                 char_ref = cand
                                 break
 
-                    if char_ref:
-                        para_ref_audio = char_ref
-
-                    if char.voice_description:
-                        para_voice_desc = char.voice_description
-                        key = char.name_en
-                        if key not in control_by_speaker:
+                    if choice.description:
+                        para_voice_desc = choice.description
+                        if choice.slug not in control_by_speaker:
                             resolved = await self._resolve_cached_control(
-                                description=char.voice_description,
-                                cached=getattr(char, "voice_control_prompt", None),
+                                description=choice.description,
+                                cached=choice.control_prompt,
                                 translator=translator,
                             )
-                            char.voice_control_prompt = resolved
-                            control_by_speaker[key] = resolved
-                        para_control = control_by_speaker[key]
+                            char.remember_control_prompt(choice, resolved)
+                            control_by_speaker[choice.slug] = resolved
+                        para_control = control_by_speaker[choice.slug]
+
+                    if char_ref:
+                        para_ref_audio = char_ref
+                    elif choice.description:
+                        # Falling back to the narrator anchor here gave this
+                        # character the narrator's timbre and made the
+                        # description do almost nothing -- the reference clip is
+                        # what carries a voice, not the control prompt. Build
+                        # them their own anchor on the same terms.
+                        para_ref_audio = await self._voice_anchor(
+                            voices_dir,
+                            f"{safe_k}_ref",
+                            choice.description,
+                            para_control,
+                            self.ANCHOR_SAMPLE_CHARACTER,
+                        )
 
             # Key chunks by Paragraph.index so /api/audio/.../para/{index} resolves them.
             chunk_file = output_dir / f"para_{chapter.id}_{p.index}.wav"

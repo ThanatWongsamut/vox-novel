@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from vox_novel.models.domain import Novel, Chapter, ChapterSummary, Paragraph
 from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.scrapers.readtoon import classify_speech_type
+from vox_novel.speaker.detector import score_attribution
 from vox_novel.storage.file import (
     StorageManager,
     UnsafePathSegment,
@@ -805,6 +806,143 @@ async def synthesize_chapter_endpoint(
     return {"job_id": job_id, "status": "started"}
 
 
+@web_app.get("/series/{series_id}/speakers/{chapter_id}", response_class=HTMLResponse)
+async def speaker_review(request: Request, series_id: str, chapter_id: str, lang: str = "th"):
+    """Review and correct who speaks each line of a chapter.
+
+    Attribution is not reliable enough to run unattended, so this is where a
+    human fixes it. Correcting a line here is also how a gold set gets built:
+    the corrections are the labels.
+    """
+    series_id = safe_id(series_id, "series_id")
+    chapter_id = safe_id(chapter_id, "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    characters = sorted(
+        knowledge.characters.values(), key=lambda c: (not c.is_narrator, c.name_en.lower())
+    )
+    attributed = sum(1 for p in chapter.paragraphs if p.speaker)
+    spoken = sum(1 for p in chapter.paragraphs if p.speech_type in ("dialogue", "thought"))
+    verified = sum(1 for p in chapter.paragraphs if p.speaker_verified)
+    unreviewed = sum(
+        1 for p in chapter.paragraphs
+        if p.speech_type in ("dialogue", "thought") and not p.speaker_verified
+    )
+    score = score_attribution(chapter)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="speakers.html",
+        context={
+            "chapter": chapter,
+            "characters": characters,
+            "narration_note": knowledge.narration_note or "",
+            "near_duplicates": knowledge.near_duplicate_characters(),
+            "attributed": attributed,
+            "spoken": spoken,
+            "verified": verified,
+            "unreviewed": unreviewed,
+            "score": score,
+            "lang": lang,
+        },
+    )
+
+
+@web_app.post("/api/speakers/update")
+async def update_speaker(request: Request):
+    """Correct one paragraph's speaker or type."""
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+    try:
+        index = int(body.get("paragraph"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="paragraph must be an integer")
+
+    speech_type = body.get("speech_type")
+    if speech_type not in ("dialogue", "thought", "narration"):
+        raise HTTPException(
+            status_code=400, detail="speech_type must be dialogue, thought or narration"
+        )
+    speaker = (body.get("speaker") or "").strip() or None
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    target = next((p for p in chapter.paragraphs if p.index == index), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Paragraph {index} not found")
+
+    # Narration has no speaker; storing one would leave the two disagreeing.
+    target.speech_type = speech_type
+    target.speaker = None if speech_type == "narration" else speaker
+    # A human corrected this line, so it is ground truth rather than a guess.
+    target.speaker_verified = True
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    # The review page saves without reloading, so it needs the running score
+    # back or its accuracy readout goes stale the moment a correction lands.
+    score = score_attribution(chapter)
+    return {
+        "status": "ok",
+        "paragraph": index,
+        "speaker": target.speaker,
+        "detected": target.speaker_detected,
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
+
+
+@web_app.post("/api/speakers/verify-rest")
+async def verify_remaining_speakers(request: Request):
+    """Mark every unreviewed spoken line in a chapter as correct as detected.
+
+    A read-through only produces labels for the lines a reviewer *changed* --
+    the ones detection got right are never touched, so a chapter read end to end
+    scores on a handful of paragraphs, all of them errors. This is the other
+    half of the verdict: everything left is correct.
+
+    Only offered as a bulk action after reading the chapter, and it never
+    overwrites an existing verdict.
+    """
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    confirmed = []
+    for p in chapter.paragraphs:
+        if p.speaker_verified or p.speech_type not in ("dialogue", "thought"):
+            continue
+        p.speaker_verified = True
+        confirmed.append(p.index)
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    score = score_attribution(chapter)
+    return {
+        "status": "ok",
+        "confirmed": len(confirmed),
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
+
+
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
 async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     series_id = safe_id(series_id, "series_id")
@@ -943,6 +1081,29 @@ async def update_voice_prompt(request: Request):
     voice_type = body.get("voice_type")  # "narrator" or "character"
     character_name = body.get("character_name")
     voice_description = body.get("voice_description", "").strip()
+    # "own", or "body" for the voice a character's spoken lines take while they
+    # are in someone else's body. Their thoughts keep their own voice.
+    voice_slot = body.get("voice_slot", "own")
+    from_chapter = body.get("body_voice_from_chapter")
+
+    if voice_slot not in ("own", "body"):
+        raise HTTPException(status_code=400, detail="voice_slot must be 'own' or 'body'")
+    if voice_slot == "body" and voice_type != "character":
+        raise HTTPException(status_code=400, detail="only a character has a body voice")
+    if from_chapter is not None:
+        try:
+            from_chapter = float(from_chapter)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="body_voice_from_chapter must be a number"
+            )
+    # A body voice with no start chapter would apply to the whole series,
+    # re-voicing chapters set before the swap.
+    if voice_slot == "body" and voice_description and from_chapter is None:
+        raise HTTPException(
+            status_code=400,
+            detail="a body voice needs the chapter number the swap starts at",
+        )
 
     if not series_id or not voice_type:
         raise HTTPException(status_code=400, detail="Missing required parameters")
@@ -977,7 +1138,11 @@ async def update_voice_prompt(request: Request):
         )
     else:
         knowledge.update_character_voice(
-            char.name_en, voice_description=voice_description, voice_control_prompt=control
+            char.name_en,
+            voice_description=voice_description,
+            voice_control_prompt=control,
+            slot=voice_slot,
+            from_chapter=from_chapter,
         )
 
     knowledge_mgr.save(knowledge)

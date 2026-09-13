@@ -36,6 +36,7 @@ def get_app_settings() -> Dict[str, Any]:
     model = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
     # Optional: run the editor pass on a stronger model than the draft.
     polish_model = os.getenv("OPENROUTER_POLISH_MODEL", "")
+    base_url = os.getenv("OPENROUTER_BASE_URL", "")
     voxcpm_url = os.getenv("VOXCPM_API_URL", "")
     voxcpm_device = os.getenv("VOXCPM_DEVICE", "auto")
 
@@ -44,6 +45,7 @@ def get_app_settings() -> Dict[str, Any]:
         "openrouter_api_key_set": bool(openrouter_key.strip()),
         "openrouter_model": model,
         "openrouter_polish_model": polish_model,
+        "openrouter_base_url": base_url,
         "gemini_api_key": mask_key(gemini_key),
         "gemini_api_key_set": bool(gemini_key.strip()),
         "voxcpm_api_url": voxcpm_url,
@@ -71,6 +73,11 @@ def save_app_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         os.environ["OPENROUTER_MODEL"] = new_model
 
     # Empty is meaningful here: it means "use the draft model for polish too".
+    if "openrouter_base_url" in data:
+        new_base = (data.get("openrouter_base_url") or "").strip()
+        updates["OPENROUTER_BASE_URL"] = new_base
+        os.environ["OPENROUTER_BASE_URL"] = new_base
+
     if "openrouter_polish_model" in data:
         new_polish = (data.get("openrouter_polish_model") or "").strip()
         updates["OPENROUTER_POLISH_MODEL"] = new_polish

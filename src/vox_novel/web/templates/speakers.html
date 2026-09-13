@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speakers - {{ chapter.translated_title or chapter.title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0b1120; color: #e2e8f0;
+               font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0b1120; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+<div class="max-w-5xl mx-auto px-4 py-6">
+
+  <div class="flex items-start justify-between gap-4 mb-5">
+    <div>
+      <a href="/series/{{ chapter.book_id }}" class="text-[11px] text-slate-400 hover:text-slate-200">
+        <i class="fa-solid fa-arrow-left"></i> Catalog
+      </a>
+      <h1 class="text-lg font-bold text-white mt-1">{{ chapter.translated_title or chapter.title }}</h1>
+      <p class="text-[11px] text-slate-400">
+        {{ chapter.paragraphs|length }} paragraphs ·
+        <span class="text-cyan-400">{{ spoken }}</span> spoken ·
+        <span class="text-emerald-400">{{ attributed }}</span> attributed ·
+        <span class="text-emerald-400">{{ verified }}</span> verified
+      </p>
+    </div>
+    <div class="flex items-center gap-2 shrink-0">
+      <label class="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+        <input type="checkbox" id="only-spoken" class="accent-indigo-500" checked>
+        Only spoken lines
+      </label>
+      <button id="verify-rest" type="button"
+              data-remaining="{{ unreviewed }}"
+              class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white text-[11px]
+                     rounded-lg transition disabled:opacity-40"
+              {% if not unreviewed %}hidden{% endif %}>
+        Rest are correct ({{ unreviewed }})
+      </button>
+      <a href="/series/{{ chapter.book_id }}/read/{{ chapter.id }}"
+         class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-[11px] rounded-lg transition">
+        Read
+      </a>
+    </div>
+  </div>
+
+  <div id="score-panel" class="mb-4 p-3 bg-slate-900/70 border border-slate-700 rounded-xl"
+       data-unscoreable="{{ 'yes' if score.unscoreable else 'no' }}">
+    <div class="flex items-baseline gap-3 flex-wrap">
+      <p class="text-[11px] font-semibold text-slate-200">
+        <i class="fa-solid fa-bullseye"></i> Scored against your corrections
+      </p>
+      <span id="score-pct" class="text-lg font-bold"
+            {% if score.accuracy is none %}hidden{% endif %}></span>
+      <span id="score-detail" class="text-[11px] text-slate-400"></span>
+    </div>
+    {% if score.unscoreable %}
+    <p class="text-[10px] text-slate-500 mt-1">
+      {{ score.unscoreable|length }} verified line(s) cannot be scored — they were
+      reviewed before the model's own guess was recorded, so there is nothing to
+      compare against. Re-running detection restores the guess without touching
+      your labels.
+    </p>
+    {% endif %}
+    {% if score.misses %}
+    <details class="mt-2">
+      <summary class="text-[11px] text-slate-400 cursor-pointer hover:text-slate-200">
+        Show the {{ score.misses|length }} it got wrong
+      </summary>
+      <div class="mt-1.5 space-y-0.5">
+        {% for m in score.misses %}
+        <div class="text-[10px] font-mono text-slate-400">
+          <span class="text-slate-500">{{ m.paragraph }}</span>
+          <span class="text-red-400">{{ m.detected or '—' }}</span>
+          <span class="text-slate-600">→</span>
+          <span class="text-emerald-400">{{ m.truth or '—' }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
+
+  {% if narration_note %}
+  <div class="mb-4 p-3 bg-indigo-950/50 border border-indigo-500/30 rounded-xl">
+    <p class="text-[11px] font-semibold text-indigo-300 mb-0.5">
+      <i class="fa-solid fa-book-open"></i> Narration
+    </p>
+    <p class="text-[11px] text-slate-300">{{ narration_note }}</p>
+  </div>
+  {% endif %}
+
+  {% if near_duplicates %}
+  <div class="mb-4 p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl">
+    <p class="text-[11px] font-semibold text-amber-300 mb-1">
+      <i class="fa-solid fa-triangle-exclamation"></i> These may be the same character
+    </p>
+    <p class="text-[10px] text-slate-400 mb-1.5">
+      Left unmerged deliberately — telling a corrupted spelling from a second
+      character with a similar name is a judgement call. Merge them in the glossary
+      if they are one person, or they will end up with separate voices.
+    </p>
+    {% for a, b in near_duplicates %}
+    <div class="text-[11px] text-slate-300 font-mono">{{ a }} &nbsp;~&nbsp; {{ b }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if spoken == 0 %}
+  <div class="p-6 text-center bg-slate-900/60 border border-slate-700 rounded-xl">
+    <p class="text-sm text-slate-300 mb-1">No speakers detected yet</p>
+    <p class="text-[11px] text-slate-500 font-mono">
+      uv run vox-novel speakers {{ chapter.book_id }} {{ chapter.id }} --extract
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="space-y-1.5">
+    {% for p in chapter.paragraphs %}
+    {% set spoken_line = p.speech_type in ('dialogue', 'thought') %}
+    <div class="para-row flex items-start gap-3 p-2.5 rounded-lg border transition
+                {% if p.speaker_verified %}bg-emerald-950/25 border-emerald-600/30
+                {% elif spoken_line %}bg-slate-900/60 border-slate-700
+                {% else %}bg-transparent border-transparent{% endif %}"
+         data-spoken="{{ 'yes' if spoken_line else 'no' }}"
+         data-index="{{ p.index }}">
+
+      <span class="text-[10px] text-slate-500 font-mono w-8 shrink-0 pt-1.5">{{ p.index }}</span>
+
+      <div class="flex-1 min-w-0">
+        <p class="text-[13px] leading-relaxed
+                  {% if spoken_line %}text-slate-100{% else %}text-slate-400{% endif %}">
+          {{ p.translated_text or p.text }}
+        </p>
+        {% if p.speaker_verified and p.speaker_detected != p.speaker %}
+        <p class="text-[10px] text-slate-500 mt-0.5">
+          model said <span class="text-red-400/80 font-mono">{{ p.speaker_detected or 'narration' }}</span>
+        </p>
+        {% endif %}
+      </div>
+
+      <div class="flex items-center gap-1.5 shrink-0">
+        <select class="type-select bg-slate-800 border border-slate-700 rounded-md px-1.5 py-1
+                       text-[10px] text-slate-200 focus:outline-none focus:border-indigo-500">
+          {% for t in ('narration', 'dialogue', 'thought') %}
+          <option value="{{ t }}" {% if p.speech_type == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+
+        <select class="speaker-select bg-slate-800 border border-slate-700 rounded-md px-1.5 py-1
+                       text-[10px] text-slate-200 focus:outline-none focus:border-indigo-500
+                       {% if not spoken_line %}invisible{% endif %}">
+          <option value="">— unattributed —</option>
+          {% for c in characters %}
+          <option value="{{ c.name_en }}" {% if p.speaker == c.name_en %}selected{% endif %}>
+            {{ c.name_target or c.name_en }}{% if c.is_narrator %} (narrator){% endif %}
+          </option>
+          {% endfor %}
+          {% if p.speaker and p.speaker not in characters|map(attribute='name_en')|list %}
+          <option value="{{ p.speaker }}" selected>{{ p.speaker }} (unknown)</option>
+          {% endif %}
+        </select>
+
+        <span class="saved-tick text-emerald-400 text-[11px] w-3 opacity-0">
+          <i class="fa-solid fa-check"></i>
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+(function () {
+  const seriesId = {{ chapter.book_id | tojson }};
+  const chapterId = {{ chapter.id | tojson }};
+
+  // Server-rendered, then kept current by each save -- corrections post without
+  // a reload, so a static number would be wrong from the first click.
+  function renderScore(score) {
+    const panel = document.getElementById('score-panel');
+    const pct = document.getElementById('score-pct');
+    const detail = document.getElementById('score-detail');
+    const hasUnscoreable = panel.dataset.unscoreable === 'yes';
+
+    panel.hidden = !score.scored && !hasUnscoreable;
+    pct.hidden = score.accuracy === null;
+    if (score.accuracy === null) {
+      detail.textContent = '';
+      return;
+    }
+    pct.textContent = (score.accuracy * 100).toFixed(1) + '%';
+    pct.className = 'text-lg font-bold ' + (
+      score.accuracy >= 0.9 ? 'text-emerald-400'
+        : score.accuracy >= 0.75 ? 'text-amber-400' : 'text-red-400');
+    detail.textContent = `${score.correct} right · ${score.wrong} wrong · `
+      + `of ${score.scored} spoken lines you verified`;
+  }
+  renderScore({
+    scored: {{ score.scored | tojson }},
+    correct: {{ score.correct | tojson }},
+    wrong: {{ score.wrong | tojson }},
+    accuracy: {{ score.accuracy | tojson }},
+  });
+
+  function applyFilter() {
+    const only = document.getElementById('only-spoken').checked;
+    document.querySelectorAll('.para-row').forEach(row => {
+      row.hidden = only && row.dataset.spoken !== 'yes';
+    });
+  }
+  document.getElementById('only-spoken').addEventListener('change', applyFilter);
+  applyFilter();
+
+  async function save(row) {
+    const typeSelect = row.querySelector('.type-select');
+    const speakerSelect = row.querySelector('.speaker-select');
+    const tick = row.querySelector('.saved-tick');
+    const speechType = typeSelect.value;
+
+    // Narration has no speaker, so hide the control rather than leave a stale one.
+    speakerSelect.classList.toggle('invisible', speechType === 'narration');
+
+    const res = await fetch('/api/speakers/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        series_id: seriesId,
+        chapter_id: chapterId,
+        paragraph: Number(row.dataset.index),
+        speech_type: speechType,
+        speaker: speechType === 'narration' ? '' : speakerSelect.value,
+      }),
+    });
+
+    if (!res.ok) {
+      tick.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      tick.classList.remove('text-emerald-400', 'opacity-0');
+      tick.classList.add('text-red-400');
+      return;
+    }
+
+    const payload = await res.json();
+    if (payload.score) renderScore(payload.score);
+
+    row.dataset.spoken = speechType === 'narration' ? 'no' : 'yes';
+    row.className = row.className
+      .replace(/bg-slate-900\/60|bg-transparent/, 'bg-emerald-950/25')
+      .replace(/border-slate-700|border-transparent/, 'border-emerald-600/30');
+    tick.classList.remove('opacity-0');
+    setTimeout(() => tick.classList.add('opacity-0'), 1200);
+    applyFilter();
+  }
+
+  document.querySelectorAll('.para-row').forEach(row => {
+    row.querySelectorAll('select').forEach(el => {
+      el.addEventListener('change', () => save(row));
+    });
+  });
+
+  // Correcting a line is the only thing that marks it reviewed, so a chapter
+  // read end to end scores on its errors alone. This records the other half of
+  // the verdict: everything left is right. Two clicks, because it writes a
+  // judgement onto every remaining line at once.
+  const verifyRest = document.getElementById('verify-rest');
+  let armed = false;
+  verifyRest.addEventListener('click', async () => {
+    const remaining = Number(verifyRest.dataset.remaining);
+    if (!armed) {
+      armed = true;
+      verifyRest.textContent = `Confirm all ${remaining}?`;
+      verifyRest.classList.add('bg-amber-600', 'hover:bg-amber-500');
+      setTimeout(() => {
+        if (!armed) return;
+        armed = false;
+        verifyRest.textContent = `Rest are correct (${remaining})`;
+        verifyRest.classList.remove('bg-amber-600', 'hover:bg-amber-500');
+      }, 4000);
+      return;
+    }
+
+    armed = false;
+    verifyRest.disabled = true;
+    const res = await fetch('/api/speakers/verify-rest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ series_id: seriesId, chapter_id: chapterId }),
+    });
+    if (!res.ok) {
+      verifyRest.textContent = 'Failed';
+      return;
+    }
+    const payload = await res.json();
+    renderScore(payload.score);
+    verifyRest.hidden = true;
+    document.querySelectorAll('.para-row[data-spoken="yes"]').forEach(row => {
+      row.className = row.className
+        .replace(/bg-slate-900\/60|bg-transparent/, 'bg-emerald-950/25')
+        .replace(/border-slate-700|border-transparent/, 'border-emerald-600/30');
+    });
+  });
+})();
+</script>
+</body>
+</html>

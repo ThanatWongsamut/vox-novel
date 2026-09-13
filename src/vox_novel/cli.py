@@ -548,6 +548,120 @@ def _review_entities_cli(new_terms: list, new_chars: list, knowledge: SeriesKnow
     return True
 
 
+@app.command(name="speakers")
+def detect_speakers_cmd(
+    series_id: str = typer.Argument(..., help="Series ID"),
+    chapter_id: str = typer.Argument(..., help="Chapter ID"),
+    extract: bool = typer.Option(
+        False, "--extract", help="Rebuild the character registry from this chapter first"
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Override the model (defaults to OPENROUTER_MODEL)"
+    ),
+    base_url: Optional[str] = typer.Option(
+        None, "--base-url", help="OpenAI-compatible server, e.g. http://localhost:11434/v1"
+    ),
+    source: bool = typer.Option(
+        False, "--source", help="Attribute the source text instead of the translation"
+    ),
+    confirm_with: Optional[str] = typer.Option(
+        None, "--confirm-with",
+        help="Second model; keeps only attributions both agree on, rest read as narration",
+    ),
+):
+    """Attribute each paragraph of a chapter to a speaker.
+
+    Accuracy depends on the character registry more than on the model: review it
+    with --extract on one chapter before running a whole novel, paying particular
+    attention to which character is the narrator.
+    """
+    import os
+
+    if model:
+        os.environ["OPENROUTER_SPEAKER_MODEL"] = model
+    if base_url:
+        os.environ["OPENROUTER_BASE_URL"] = base_url
+
+    pipeline = NovelPipeline()
+
+    async def _run():
+        console.print(Panel(
+            f"[bold cyan]🗣️  Speaker Attribution[/bold cyan]\n"
+            f"[bold]Series:[/bold] {series_id}\n"
+            f"[bold]Chapter:[/bold] {chapter_id}\n"
+            f"[bold]Model:[/bold] {os.getenv('OPENROUTER_SPEAKER_MODEL') or os.getenv('OPENROUTER_MODEL', '(default)')}\n"
+            f"[bold]Server:[/bold] {os.getenv('OPENROUTER_BASE_URL') or 'openrouter.ai'}",
+            title="Speaker Detection", border_style="cyan",
+        ))
+
+        from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+            BarColumn(), TaskProgressColumn(), console=console,
+        ) as progress:
+            task = progress.add_task("Attributing...", total=100)
+
+            async def progress_cb(pct: int, msg: str):
+                progress.update(task, completed=pct, description=f"[cyan]{msg}[/cyan]")
+
+            try:
+                result = await pipeline.detect_speakers(
+                    series_id=series_id, chapter_id=chapter_id,
+                    extract_registry_first=extract,
+                    use_translated=not source,
+                    confirm_model=confirm_with,
+                    progress_callback=progress_cb,
+                )
+            except Exception as e:
+                console.print(f"\n[bold red]❌ Failed:[/bold red] {e}")
+                return
+            progress.update(task, completed=100, description="[bold green]Done[/bold green]")
+
+        console.print(f"\n[bold green]✅ Attributed {result['annotated']} paragraph(s)[/bold green]")
+        if result.get("registry_added"):
+            console.print(f"[cyan]New characters:[/cyan] {', '.join(result['registry_added'])}")
+        if result.get("missing"):
+            console.print(
+                f"[yellow]⚠️  {len(result['missing'])} paragraph(s) fell back to narration:[/yellow] "
+                f"{result['missing'][:10]}"
+            )
+        # Confidence is not a reliable signal on local models -- they report 1.0
+        # while wrong -- so treat this as a hint, not a review queue.
+        if result.get("low_confidence"):
+            console.print(f"[yellow]Low confidence ({len(result['low_confidence'])}):[/yellow]")
+            for item in result["low_confidence"][:10]:
+                console.print(f"  [{item['paragraph']}] {item['speaker']} ({item['confidence']:.2f})")
+        if confirm_with:
+            disagreed = result.get("disagreements", [])
+            total = result["annotated"] + len(disagreed)
+            rate = (result["annotated"] / total * 100) if total else 0
+            console.print(
+                f"[cyan]Two models agreed on {result['annotated']}/{total} "
+                f"paragraphs ({rate:.0f}%).[/cyan] The rest read as narration."
+            )
+            for d in disagreed[:10]:
+                console.print(f"  [{d['paragraph']}] {d['primary']}  vs  {d['secondary']}")
+        if result.get("near_duplicates"):
+            console.print("[yellow]Possible duplicate characters — review these:[/yellow]")
+            for a, b in result["near_duplicates"][:10]:
+                console.print(f"  {a}  ~  {b}")
+
+        score = result.get("score") or {}
+        if score.get("scored"):
+            pct = score["accuracy"] * 100
+            colour = "green" if pct >= 90 else "yellow" if pct >= 75 else "red"
+            console.print(
+                f"[bold {colour}]Scored {pct:.1f}%[/bold {colour}] against "
+                f"{score['scored']} human-verified spoken line(s) "
+                f"({score['correct']} right, {score['wrong']} wrong)."
+            )
+            for m in score.get("misses", [])[:10]:
+                console.print(f"  [{m['paragraph']}] {m['detected'] or '—'}  →  {m['truth'] or '—'}")
+
+    asyncio.run(_run())
+
+
 @app.command(name="tts")
 def tts_chapter_cmd(
     series_id: str = typer.Argument(..., help="Series ID (e.g. 36119734008764305)"),

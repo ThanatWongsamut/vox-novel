@@ -49,7 +49,12 @@ class OpenRouterTranslator(BaseTranslator):
                 # retried against a 404. Set OPENROUTER_FALLBACK_MODELS to opt in.
                 self.fallback_models = []
 
-        self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        # OPENROUTER_BASE_URL points the client at any OpenAI-compatible server --
+        # Ollama, vLLM, llama.cpp -- so a local GPU can serve translation and
+        # speaker attribution with no per-chapter cost and no rate limit.
+        self.base_url = (
+            base_url or os.getenv("OPENROUTER_BASE_URL") or self.DEFAULT_BASE_URL
+        ).rstrip("/")
         self.timeout = timeout
 
     @property
@@ -90,6 +95,7 @@ class OpenRouterTranslator(BaseTranslator):
         status_callback: Optional[callable] = None,
         max_retries: int = 4,
         max_tokens: Optional[int] = None,
+        require_schema_support: bool = False,
     ) -> str:
         headers = self._get_headers()
         payload = {
@@ -97,6 +103,8 @@ class OpenRouterTranslator(BaseTranslator):
             "messages": messages,
             "temperature": temperature,
         }
+        if require_schema_support:
+            payload["provider"] = {"require_parameters": True}
         # Without this OpenRouter reserves the model's whole context window, which a
         # low-balance account cannot afford even for a one-line answer.
         if max_tokens is not None:
@@ -257,6 +265,69 @@ class OpenRouterTranslator(BaseTranslator):
 
     # A one-off completion is a short answer, not a chapter.
     COMPLETION_MAX_TOKENS = 256
+
+    @staticmethod
+    def _strict_schema(model) -> dict:
+        """Convert a Pydantic schema into the dialect strict providers require.
+
+        They reject `default`, and demand every object declare
+        `additionalProperties: false` with all properties listed in `required`.
+        Optional fields survive as nullable types.
+        """
+        def walk(node):
+            if isinstance(node, dict):
+                node.pop("default", None)
+                properties = node.get("properties")
+                if isinstance(properties, dict):
+                    node["additionalProperties"] = False
+                    node["required"] = list(properties)
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        schema = model.model_json_schema()
+        walk(schema)
+        return schema
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """Some providers wrap JSON in a markdown fence despite the schema."""
+        out = text.strip()
+        if out.startswith("```"):
+            body = out[3:]
+            out = body.split("```")[0] if "```" in body else body
+            out = out.removeprefix("json").strip()
+        return out
+
+    async def structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_model: type,
+        temperature: float = 0.0,
+    ):
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        raw = await self._call_chat_completion(
+            messages,
+            temperature=temperature,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": output_model.__name__,
+                    "strict": True,
+                    "schema": self._strict_schema(output_model),
+                },
+            },
+            # Without this a fallback provider that ignores response_format can
+            # silently return prose, which fails validation far from the cause.
+            require_schema_support=True,
+        )
+        return output_model.model_validate_json(self._strip_fences(raw))
 
     async def complete(self, system_prompt: str, user_prompt: str) -> str:
         return (

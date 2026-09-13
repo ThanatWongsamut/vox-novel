@@ -194,6 +194,98 @@ class NovelPipeline:
         self.storage.save_chapter(chapter)
         return audio_path
 
+    async def detect_speakers(
+        self,
+        series_id: str,
+        chapter_id: str,
+        extract_registry_first: bool = False,
+        use_translated: bool = True,
+        confirm_model: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str], Any]] = None,
+    ) -> dict:
+        """Attribute every paragraph of a chapter to a speaker.
+
+        Runs after translation and before synthesis, and is re-runnable without
+        re-translating -- which matters because attribution accuracy depends on a
+        registry the user is expected to curate between runs.
+        """
+        from vox_novel.speaker.detector import (
+            annotate_chapter,
+            extract_registry,
+            score_attribution,
+        )
+
+        chapter = self.storage.get_chapter(series_id, chapter_id)
+        if not chapter:
+            raise ValueError(f"Chapter '{chapter_id}' not found in series '{series_id}'")
+
+        translator = self.speaker_translator()
+        if translator is None:
+            raise RuntimeError(
+                "Speaker detection needs an LLM. Set OPENROUTER_API_KEY, or "
+                "OPENROUTER_BASE_URL to point at a local server."
+            )
+
+        target_lang = chapter.target_language or "th"
+        knowledge = self.knowledge.load_or_init(series_id, target_lang=target_lang)
+
+        added = []
+        if extract_registry_first or not knowledge.characters:
+            if progress_callback:
+                await self._report(progress_callback, 5, "Building the character registry...")
+            added = await extract_registry(
+                chapter, knowledge, translator, use_translated=use_translated
+            )
+
+        # A second model turns an uncertain attribution into narration rather than
+        # a wrong voice, which is the difference between a feature that degrades
+        # and one that actively sounds broken.
+        confirm_with = self.speaker_translator(model=confirm_model) if confirm_model else None
+
+        result = await annotate_chapter(
+            chapter, knowledge, translator,
+            use_translated=use_translated,
+            progress_callback=progress_callback,
+            confirm_with=confirm_with,
+        )
+
+        self.knowledge.save(knowledge)
+        self.storage.save_chapter(chapter)
+
+        result["registry_added"] = added
+        result["near_duplicates"] = knowledge.near_duplicate_characters()
+        # Verified lines survive a re-run, so scoring against them measures this
+        # run rather than the one that produced the labels.
+        result["score"] = score_attribution(chapter)
+        return result
+
+    @staticmethod
+    async def _report(progress_callback, pct: int, msg: str) -> None:
+        import inspect
+
+        result = progress_callback(pct, msg)
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
+    def speaker_translator(model: Optional[str] = None):
+        """The translator used for speaker attribution.
+
+        A local server needs no API key, so the presence of a base URL is enough
+        on its own; returns None when neither is configured.
+        """
+        import os
+
+        if not os.getenv("OPENROUTER_API_KEY") and not os.getenv("OPENROUTER_BASE_URL"):
+            return None
+        model = model or os.getenv("OPENROUTER_SPEAKER_MODEL") or os.getenv(
+            "OPENROUTER_MODEL", "google/gemma-4-31b-it:free"
+        )
+        try:
+            return translator_registry.get_translator("openrouter", model=model)
+        except Exception:
+            return None
+
     def _persist_derived_control_prompts(self, series_id: str, knowledge, overridden: bool) -> None:
         """Backfill control prompts for a series no endpoint has derived one for.
 
