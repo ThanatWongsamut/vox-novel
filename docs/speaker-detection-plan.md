@@ -315,11 +315,52 @@ Chapter 169, per detection run:
 | registry total | 22,128 |
 
 The registry costs 1.79x what the content costs. Free on the local Ollama this
-was measured on, and the first thing to fix if detection ever runs against a
-paid endpoint. `_scoped_registry` already trims by chapters seen; the larger win
-is that seven of the fourteen entries carry chapter-specific commentary from the
-`--extract` run ("Not present in this chapter. Mentioned as..."), which is both
-bloat and misleading input on every other chapter.
+was measured on; it matters only against a paid endpoint.
+
+Seven of the fourteen entries carry chapter-specific commentary left by the
+`--extract` run ("Not present in this chapter. Mentioned as..."). That is worth
+removing on its own account: on any chapter but the one it was extracted from,
+it is not merely bloat but wrong input.
+
+### Does the registry have to be resent?
+
+Each chunk is an independent stateless call, so sending the block only once
+means every later chunk runs with no registry at all -- three quarters of a
+four-chunk chapter. The expectation, stated before measuring, was that this
+would cost something like the 13 points between an auto-built registry and a
+curated one.
+
+It costs one line in ninety-four:
+
+| | registry every chunk | first chunk only |
+| --- | --- | --- |
+| chapter 169 | 49/49 | 48/49 |
+| chapter 68 | 42/45 | 42/45 |
+| registry chars per chapter | 36,116 | 9,029 |
+| runtime | 277s / 306s | 300s / 271s |
+
+The 13-point figure was the wrong thing to reason from: it measures registry
+*quality*, auto-built against curated, with both fully sent. Registry *presence*
+had never been measured.
+
+Chapter 68 produces the same three errors in both arms, one of them in the final
+chunk, which ran blind. So the registry was not preventing them.
+
+The likely reason the loss is so small is that the registry's most important job
+does not happen in the prompt at all. Name canonicalisation and alias resolution
+run in Python through `find_character` after the model answers, so a chunk with
+no registry still has its names folded correctly. What the block adds is the
+narrator flag and the speech styles, and this model reads most of that off the
+Thai prose directly -- characters are named in narration, and register is
+carried by particles.
+
+**Not adopted as a default.** Ninety-four lines across two chapters of one
+series is thin evidence for a change whose failure mode is a silent wrong voice,
+and qwen3.8 is a strong model -- a weaker one would lean on the block harder,
+which is exactly when it should be present. Runtime did not improve either, so
+on local hardware it buys nothing at all. Against a paid endpoint, prefix
+caching is the better lever, since the block is byte-identical across a
+chapter's chunks and costs no accuracy.
 
 ## Risks
 
