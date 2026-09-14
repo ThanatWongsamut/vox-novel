@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -10,21 +10,6 @@ class TermMapping(BaseModel):
     category: str = "general"  # gaming, character, location, item, skill, monster, honorific
     aliases: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
-
-
-class VoiceChoice(NamedTuple):
-    """Which of a character's voices a line is heard in, and where it is cached.
-
-    `slug` distinguishes the two voices everywhere a name becomes a filename or a
-    cache key, so a body voice never serves the character's own prompt or clones
-    from their anchor.
-    """
-
-    description: Optional[str]
-    ref_audio: Optional[str]
-    control_prompt: Optional[str]
-    slug: str
-    is_body: bool
 
 
 class CharacterProfile(BaseModel):
@@ -49,63 +34,20 @@ class CharacterProfile(BaseModel):
     speech_style: Optional[str] = None
     line_count: int = 0
     last_seen_chapter: Optional[str] = None
-    # A character whose spoken lines are heard in a different voice than their
-    # inner ones -- a body swap, a possession, a disguise. Attribution stays
-    # about identity: every line is still this character's. Only dialogue is
-    # voiced from here; thought keeps the character's own voice, which is the
-    # point of the distinction.
+    # Body swap, possession, a mind wearing someone else's shape: this character
+    # is inside `inhabiting`'s body from `inhabiting_from_chapter` on.
     #
-    # This is a voice, not a second character, because the other body's name is
-    # usually already an alias of this one. Registering it separately would make
-    # `find_character` ambiguous on a name the attribution model actually emits.
-    body_voice_description: Optional[str] = None
-    body_voice_ref_audio: Optional[str] = None
-    body_voice_control_prompt: Optional[str] = None
-    # The chapter the swap begins at, by chapter_number. Earlier chapters keep
-    # the character's own voice, so re-synthesizing one after the plot moves does
-    # not silently re-voice it. Unset means the body voice never applies.
-    body_voice_from_chapter: Optional[float] = None
-
-    def voice_for(
-        self, speech_type: Optional[str], chapter_number: Optional[float] = None
-    ) -> "VoiceChoice":
-        """Pick which of this character's voices a line is heard in.
-
-        Only spoken lines take the body voice. Thought keeps the character's own,
-        which is the whole point of the distinction: the listener hears the body
-        others hear, and the mind the character actually is.
-
-        A chapter with no number cannot be placed relative to the swap, so it
-        falls back to the character's own voice rather than guessing.
-        """
-        swapped = (
-            self.body_voice_description is not None
-            and self.body_voice_from_chapter is not None
-            and chapter_number is not None
-            and chapter_number >= self.body_voice_from_chapter
-        )
-        if swapped and speech_type == "dialogue":
-            return VoiceChoice(
-                self.body_voice_description,
-                self.body_voice_ref_audio,
-                self.body_voice_control_prompt,
-                f"{self.name_en}__body",
-                True,
-            )
-        return VoiceChoice(
-            self.voice_description,
-            self.voice_ref_audio,
-            self.voice_control_prompt,
-            self.name_en,
-            False,
-        )
-
-    def remember_control_prompt(self, choice: "VoiceChoice", control: str) -> None:
-        """Cache a derived control prompt onto whichever voice produced it."""
-        if choice.is_body:
-            self.body_voice_control_prompt = control
-        else:
-            self.voice_control_prompt = control
+    # Recorded once, on the mind, but read from both ends -- because the prose
+    # names both. One chapter calls her by the body she is wearing, the next
+    # calls her by her own name while she is still wearing it, and attribution
+    # can only ever report the name it was given. So a line attributed to the
+    # mind is spoken in the body's voice, and a line attributed to the body is
+    # *thought* in the mind's. Either way the listener hears the body everyone
+    # in the scene hears, and the mind the character actually is.
+    inhabiting: Optional[str] = None
+    # By chapter_number. Earlier chapters are unaffected, so re-synthesizing one
+    # set before the swap cannot silently re-voice it. Unset means never.
+    inhabiting_from_chapter: Optional[float] = None
 
 
 class SeriesKnowledge(BaseModel):
@@ -250,38 +192,101 @@ class SeriesKnowledge(BaseModel):
             self.narrator_voice_control_prompt = voice_control_prompt
         self.last_updated = datetime.utcnow()
 
+    def _inhabits(self, character: CharacterProfile, chapter_number) -> bool:
+        """True where this character is wearing someone else's body by now."""
+        return bool(
+            character.inhabiting
+            and character.inhabiting_from_chapter is not None
+            and chapter_number is not None
+            and chapter_number >= character.inhabiting_from_chapter
+        )
+
+    def _wearer_of(self, body: CharacterProfile, chapter_number):
+        """Whose mind is inside this body, if anyone's, by this chapter."""
+        for other in self.characters.values():
+            if other.inhabiting == body.name_en and self._inhabits(other, chapter_number):
+                return other
+        return None
+
+    def voice_for(
+        self,
+        character: CharacterProfile,
+        speech_type: Optional[str],
+        chapter_number: Optional[float] = None,
+    ) -> CharacterProfile:
+        """Whose voice this line is heard in.
+
+        A mind wearing another body speaks in that body's voice and thinks in
+        its own. Attribution reports whichever name the prose used, so both
+        namings have to resolve to the same pair of voices:
+
+            line attributed to the mind, speaking  -> the body's voice
+            line attributed to the mind, thinking  -> its own voice
+            line attributed to the body, speaking  -> the body's voice
+            line attributed to the body, thinking  -> the wearer's voice
+
+        Before the swap chapter -- or with no chapter number to place the line
+        by -- the character is simply themselves. Resolution is one hop, so two
+        characters wearing each other cannot loop.
+        """
+        if self._inhabits(character, chapter_number):
+            if speech_type == "dialogue":
+                body = self.find_character(character.inhabiting)
+                if body is not None:
+                    return body
+            return character
+
+        if speech_type == "thought":
+            wearer = self._wearer_of(character, chapter_number)
+            if wearer is not None:
+                return wearer
+        return character
+
     def update_character_voice(
         self,
         name_en: str,
         voice_description: Optional[str] = None,
         voice_ref_audio: Optional[str] = None,
         voice_control_prompt: Optional[str] = None,
-        slot: str = "own",
-        from_chapter: Optional[float] = None,
     ) -> bool:
-        """Update character voice prompt and/or reference audio anchor.
-
-        `slot` picks which of the character's two voices is written -- "own", or
-        "body" for the voice their spoken lines take while they are in someone
-        else's body. The body voice also needs `from_chapter`, without which it
-        never applies.
-        """
-        if slot not in ("own", "body"):
-            raise ValueError(f"slot must be 'own' or 'body', not {slot!r}")
+        """Update character voice prompt and/or reference audio anchor."""
         char = self.find_character(name_en)
         if not char:
             return False
-        prefix = "body_voice" if slot == "body" else "voice"
         if voice_description is not None:
-            setattr(char, f"{prefix}_description", voice_description or None)
+            char.voice_description = voice_description or None
             # The cached English control no longer describes the new text.
-            setattr(char, f"{prefix}_control_prompt", None)
+            char.voice_control_prompt = None
         if voice_ref_audio is not None:
-            setattr(char, f"{prefix}_ref_audio", voice_ref_audio)
+            char.voice_ref_audio = voice_ref_audio
         if voice_control_prompt is not None:
-            setattr(char, f"{prefix}_control_prompt", voice_control_prompt)
-        if slot == "body":
-            char.body_voice_from_chapter = from_chapter
+            char.voice_control_prompt = voice_control_prompt
+        self.last_updated = datetime.utcnow()
+        return True
+
+    def set_inhabiting(
+        self, name_en: str, inhabiting: Optional[str], from_chapter: Optional[float]
+    ) -> bool:
+        """Record that this character wears another's body from a chapter on.
+
+        `inhabiting` must name a character already in the registry: the whole
+        mechanism is a redirect to that character's voice, so a name nothing
+        resolves to would silently do nothing at synthesis.
+        """
+        char = self.find_character(name_en)
+        if not char:
+            return False
+        if not inhabiting:
+            char.inhabiting = None
+            char.inhabiting_from_chapter = None
+        else:
+            body = self.find_character(inhabiting)
+            if body is None:
+                raise ValueError(f"no character named {inhabiting!r}")
+            if body.name_en == char.name_en:
+                raise ValueError("a character cannot inhabit themselves")
+            char.inhabiting = body.name_en
+            char.inhabiting_from_chapter = from_chapter
         self.last_updated = datetime.utcnow()
         return True
 

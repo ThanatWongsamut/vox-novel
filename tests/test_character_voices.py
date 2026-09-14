@@ -158,69 +158,125 @@ class TestADescribedCharacterGetsTheirOwnAnchor(CharacterVoiceTestCase):
         self.assertEqual(seen[1][1], "ริโก้_ref.wav")
 
 
-class TestABodySwapSplitsSpeechFromThought(CharacterVoiceTestCase):
-    """A character in another body is heard as that body when they speak, and
-    as themselves when they think. Attribution stays about identity -- every
-    line is still theirs."""
+class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
+    """A body holding someone else's mind speaks as the body and thinks as the
+    occupant. Occupancy is recorded on the *body*, because attribution can only
+    go by the name the prose uses, and the prose keeps using the body's name."""
 
     SWAP_AT = 100.0
 
     def setUp(self):
         super().setUp()
         self.k = self.knowledge()
+        self.k.add_character("อาซาเซล", "อาซาเซล")
         self.k.add_character("เยเรเมีย", "เยเรเมีย")
-        char = self.k.find_character("เยเรเมีย")
-        char.voice_description = "หญิงสาว เสียงสูง"
-        char.body_voice_description = "ชายหนุ่ม เสียงต่ำ"
-        char.body_voice_from_chapter = self.SWAP_AT
+        self.k.find_character("อาซาเซล").voice_description = "ชายหนุ่ม เสียงต่ำ"
+        self.k.find_character("เยเรเมีย").voice_description = "หญิงสาว เสียงสูง"
+        self.k.set_inhabiting("เยเรเมีย", "อาซาเซล", self.SWAP_AT)
 
     def rows(self):
-        return [("เยเรเมีย", "dialogue"), ("เยเรเมีย", "thought")]
+        return [("อาซาเซล", "dialogue"), ("อาซาเซล", "thought")]
 
-    def test_dialogue_is_the_body_and_thought_is_the_character(self):
+    def body(self):
+        return VOICES["ชายหนุ่ม เสียงต่ำ"]
+
+    def mind(self):
+        return VOICES["หญิงสาว เสียงสูง"]
+
+    def test_after_the_swap_speech_is_the_body_and_thought_is_the_occupant(self):
         seen = self.run_chapter(
             self.engine(), self.chapter(self.rows(), number=169.0), self.k, Translator()
         )
-        self.assertEqual(seen[1][0], VOICES["ชายหนุ่ม เสียงต่ำ"])
-        self.assertEqual(seen[2][0], VOICES["หญิงสาว เสียงสูง"])
+        self.assertEqual(seen[1][0], self.body())
+        self.assertEqual(seen[2][0], self.mind())
         self.assertNotEqual(
             seen[1][1], seen[2][1], "both voices cloned from the same anchor"
         )
 
-    def test_before_the_swap_both_are_the_character(self):
-        # Re-synthesizing an earlier chapter must not re-voice it.
+    def test_before_the_swap_the_body_is_simply_itself(self):
+        # The case the previous design got wrong: this character existed and
+        # spoke for a hundred chapters before anyone occupied him, and those
+        # chapters need no configuration at all.
         seen = self.run_chapter(
-            self.engine(), self.chapter(self.rows(), number=68.0), self.k, Translator()
+            self.engine(), self.chapter(self.rows(), number=50.0), self.k, Translator()
         )
-        self.assertEqual(seen[1][0], VOICES["หญิงสาว เสียงสูง"])
+        self.assertEqual(seen[1][0], self.body())
+        self.assertEqual(seen[2][0], self.body())
         self.assertEqual(seen[1][1], seen[2][1])
 
-    def test_a_chapter_with_no_number_keeps_the_character_voice(self):
+    def test_either_naming_resolves_to_the_same_pair_of_voices(self):
+        """The prose names both -- one chapter calls her by the body she wears,
+        the next by her own name while she still wears it. Attribution reports
+        whichever name it was given, so both have to land on the same voices."""
+        rows = [
+            ("เยเรเมีย", "dialogue"), ("เยเรเมีย", "thought"),
+            ("อาซาเซล", "dialogue"), ("อาซาเซล", "thought"),
+        ]
+        seen = self.run_chapter(
+            self.engine(), self.chapter(rows, number=169.0), self.k, Translator()
+        )
+        self.assertEqual(seen[1][0], self.body(), "her speech should sound like the body")
+        self.assertEqual(seen[2][0], self.mind(), "her thoughts should stay her own")
+        self.assertEqual(seen[3][0], self.body())
+        self.assertEqual(seen[4][0], self.mind(), "the body thinks in its wearer's voice")
+
+    def test_a_character_outside_the_swap_is_untouched(self):
+        self.k.add_character("คันน่า", "คันน่า")
+        self.k.find_character("คันน่า").voice_description = "เสียงบรรยายผู้ชาย"
+        seen = self.run_chapter(
+            self.engine(),
+            self.chapter([("คันน่า", "dialogue"), ("คันน่า", "thought")], number=169.0),
+            self.k, Translator(),
+        )
+        self.assertEqual(seen[1][0], seen[2][0])
+
+    def test_a_chapter_with_no_number_keeps_the_body_voice(self):
         # Nothing places it relative to the swap, so guessing risks the wrong voice.
         seen = self.run_chapter(
             self.engine(), self.chapter(self.rows(), number=None), self.k, Translator()
         )
-        self.assertEqual(seen[1][0], VOICES["หญิงสาว เสียงสูง"])
+        self.assertEqual(seen[2][0], self.body())
 
     def test_a_start_chapter_is_required(self):
-        self.k.find_character("เยเรเมีย").body_voice_from_chapter = None
+        self.k.find_character("เยเรเมีย").inhabiting_from_chapter = None
         seen = self.run_chapter(
             self.engine(), self.chapter(self.rows(), number=169.0), self.k, Translator()
         )
-        self.assertEqual(seen[1][0], VOICES["หญิงสาว เสียงสูง"])
+        self.assertEqual(seen[2][0], self.body())
 
-    def test_each_voice_is_derived_once_and_cached_separately(self):
+    def test_each_voice_is_derived_once_and_cached_on_its_own_profile(self):
         translator = Translator()
-        rows = self.rows() * 3
-        self.run_chapter(self.engine(), self.chapter(rows, number=169.0), self.k, translator)
-        char = self.k.find_character("เยเรเมีย")
-        self.assertEqual(char.body_voice_control_prompt, VOICES["ชายหนุ่ม เสียงต่ำ"])
-        self.assertEqual(char.voice_control_prompt, VOICES["หญิงสาว เสียงสูง"])
-        # Narrator, character, body -- one call each, not one per paragraph.
+        self.run_chapter(
+            self.engine(), self.chapter(self.rows() * 3, number=169.0), self.k, translator
+        )
+        self.assertEqual(
+            self.k.find_character("อาซาเซล").voice_control_prompt, self.body()
+        )
+        self.assertEqual(
+            self.k.find_character("เยเรเมีย").voice_control_prompt, self.mind()
+        )
+        # Narrator, body, occupant -- one call each, not one per paragraph.
         self.assertEqual(len(translator.calls), 3, translator.calls)
 
+    def test_a_body_the_registry_does_not_know_is_refused(self):
+        # The mechanism is a redirect to that character's voice, so a name
+        # nothing resolves to would silently do nothing at synthesis.
+        with self.assertRaises(ValueError):
+            self.k.set_inhabiting("เยเรเมีย", "ไม่มีใคร", 100.0)
 
-class TestTheGlossaryEditsTheSecondVoice(unittest.TestCase):
+    def test_a_character_cannot_inhabit_themselves(self):
+        with self.assertRaises(ValueError):
+            self.k.set_inhabiting("เยเรเมีย", "เยเรเมีย", 100.0)
+
+    def test_clearing_occupancy_restores_the_body(self):
+        self.k.set_inhabiting("เยเรเมีย", None, None)
+        seen = self.run_chapter(
+            self.engine(), self.chapter(self.rows(), number=169.0), self.k, Translator()
+        )
+        self.assertEqual(seen[2][0], self.body())
+
+
+class TestTheGlossaryEditsTheSwap(unittest.TestCase):
     """Setting it is the only way the plot reaches synthesis, so the endpoint
     has to refuse the shapes that would silently re-voice a whole series."""
 
@@ -241,18 +297,19 @@ class TestTheGlossaryEditsTheSecondVoice(unittest.TestCase):
         self.web = web
         self.client = TestClient(web.web_app)
         k = web.knowledge_mgr.load_or_init("b", target_lang="th")
+        k.add_character("อาซาเซล", "อาซาเซล")
         k.add_character("เยเรเมีย", "เยเรเมีย")
+        k.find_character("อาซาเซล").voice_description = "ชายหนุ่ม"
         k.find_character("เยเรเมีย").voice_description = "หญิงสาว"
         web.knowledge_mgr.save(k)
 
     def save(self, **kw):
         body = {
-            "series_id": "b", "target_lang": "th", "voice_type": "character",
-            "character_name": "เยเรเมีย", "voice_description": "ชายหนุ่ม เสียงต่ำ",
-            "voice_slot": "body", "body_voice_from_chapter": 100,
+            "series_id": "b", "target_lang": "th", "character_name": "เยเรเมีย",
+            "inhabiting": "อาซาเซล", "from_chapter": 100,
         }
         body.update(kw)
-        return self.client.post("/api/voices/update-prompt", json=body)
+        return self.client.post("/api/voices/inhabiting", json=body)
 
     def reload(self):
         return self.web.knowledge_mgr.load_or_init("b", target_lang="th").find_character("เยเรเมีย")
@@ -260,39 +317,42 @@ class TestTheGlossaryEditsTheSecondVoice(unittest.TestCase):
     def test_it_is_stored_without_touching_the_characters_own_voice(self):
         self.assertEqual(self.save().status_code, 200)
         char = self.reload()
-        self.assertEqual(char.body_voice_description, "ชายหนุ่ม เสียงต่ำ")
-        self.assertEqual(char.body_voice_from_chapter, 100.0)
-        self.assertEqual(char.voice_description, "หญิงสาว", "the own voice was overwritten")
+        self.assertEqual(char.inhabiting, "อาซาเซล")
+        self.assertEqual(char.inhabiting_from_chapter, 100.0)
+        self.assertEqual(char.voice_description, "หญิงสาว", "her own voice was overwritten")
 
-    def test_a_body_voice_without_a_start_chapter_is_refused(self):
+    def test_a_swap_without_a_start_chapter_is_refused(self):
         # It would apply to every chapter, including those set before the swap.
-        res = self.save(body_voice_from_chapter=None)
-        self.assertEqual(res.status_code, 400)
-        self.assertIsNone(self.reload().body_voice_description)
+        self.assertEqual(self.save(from_chapter=None).status_code, 400)
+        self.assertIsNone(self.reload().inhabiting)
 
     def test_clearing_it_does_not_need_a_start_chapter(self):
         self.save()
-        self.assertEqual(
-            self.save(voice_description="", body_voice_from_chapter=None).status_code, 200
-        )
-        self.assertIsNone(self.reload().body_voice_description)
+        self.assertEqual(self.save(inhabiting="", from_chapter=None).status_code, 200)
+        self.assertIsNone(self.reload().inhabiting)
+        self.assertIsNone(self.reload().inhabiting_from_chapter)
 
     def test_a_non_numeric_start_chapter_is_refused(self):
-        self.assertEqual(self.save(body_voice_from_chapter="soon").status_code, 400)
+        self.assertEqual(self.save(from_chapter="soon").status_code, 400)
 
-    def test_the_narrator_has_no_second_voice(self):
-        res = self.save(voice_type="narrator", character_name=None)
-        self.assertEqual(res.status_code, 400)
+    def test_an_unknown_body_is_refused(self):
+        self.assertEqual(self.save(inhabiting="ไม่มีใคร").status_code, 400)
 
-    def test_an_unknown_slot_is_refused(self):
-        self.assertEqual(self.save(voice_slot="ghost").status_code, 400)
+    def test_a_character_cannot_inhabit_themselves(self):
+        self.assertEqual(self.save(inhabiting="เยเรเมีย").status_code, 400)
+
+    def test_an_unknown_character_is_refused(self):
+        self.assertEqual(self.save(character_name="ไม่มีใคร").status_code, 404)
+
+    def test_a_traversing_series_id_is_refused(self):
+        self.assertEqual(self.save(series_id="../evil").status_code, 400)
 
     def test_the_glossary_page_shows_it(self):
         self.save()
         res = self.client.get("/series/b/glossary")
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertIn("Second voice", res.text)
-        self.assertIn("ชายหนุ่ม เสียงต่ำ", res.text)
+        self.assertIn("In another body", res.text)
+        self.assertIn("เยเรเมีย", res.text)
 
 
 if __name__ == "__main__":

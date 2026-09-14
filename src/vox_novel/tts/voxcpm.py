@@ -1082,21 +1082,23 @@ class VoxCPM2TTS(BaseTTS):
             if knowledge and p.speaker and p.speaker.strip().lower() not in ("narrator", "ผู้บรรยาย"):
                 char = knowledge.find_character(p.speaker)
                 if char:
-                    # A character can have two voices -- a body swap or a
-                    # possession -- in which case only their spoken lines are
-                    # heard as the body and their thoughts stay their own.
-                    choice = char.voice_for(p.speech_type, chapter.chapter_number)
+                    # A body holding someone else's mind speaks with the body's
+                    # voice and thinks with the occupant's, so the voice heard
+                    # is not always the character the line belongs to.
+                    voiced = knowledge.voice_for(
+                        char, p.speech_type, chapter.chapter_number
+                    )
                     voices_dir = output_dir.parent / "voices"
                     # Use the shared helper: it strips path separators, which a
                     # bare whitespace regex does not. Character names can come
                     # from the LLM auto-learn path.
-                    safe_k = character_voice_key(choice.slug)
+                    safe_k = character_voice_key(voiced.name_en)
 
                     # An uploaded clip outranks anything generated from a
                     # description, here and in the Voice Studio.
                     char_ref = None
-                    if choice.ref_audio and Path(choice.ref_audio).exists():
-                        char_ref = Path(choice.ref_audio)
+                    if voiced.voice_ref_audio and Path(voiced.voice_ref_audio).exists():
+                        char_ref = Path(voiced.voice_ref_audio)
                     else:
                         for ext in [".wav", ".mp3", ".m4a", ".flac"]:
                             cand = voices_dir / f"{safe_k}_ref{ext}"
@@ -1104,21 +1106,21 @@ class VoxCPM2TTS(BaseTTS):
                                 char_ref = cand
                                 break
 
-                    if choice.description:
-                        para_voice_desc = choice.description
-                        if choice.slug not in control_by_speaker:
+                    if voiced.voice_description:
+                        para_voice_desc = voiced.voice_description
+                        if voiced.name_en not in control_by_speaker:
                             resolved = await self._resolve_cached_control(
-                                description=choice.description,
-                                cached=choice.control_prompt,
+                                description=voiced.voice_description,
+                                cached=voiced.voice_control_prompt,
                                 translator=translator,
                             )
-                            char.remember_control_prompt(choice, resolved)
-                            control_by_speaker[choice.slug] = resolved
-                        para_control = control_by_speaker[choice.slug]
+                            voiced.voice_control_prompt = resolved
+                            control_by_speaker[voiced.name_en] = resolved
+                        para_control = control_by_speaker[voiced.name_en]
 
                     if char_ref:
                         para_ref_audio = char_ref
-                    elif choice.description:
+                    elif voiced.voice_description:
                         # Falling back to the narrator anchor here gave this
                         # character the narrator's timbre and made the
                         # description do almost nothing -- the reference clip is
@@ -1127,7 +1129,7 @@ class VoxCPM2TTS(BaseTTS):
                         para_ref_audio = await self._voice_anchor(
                             voices_dir,
                             f"{safe_k}_ref",
-                            choice.description,
+                            voiced.voice_description,
                             para_control,
                             self.ANCHOR_SAMPLE_CHARACTER,
                         )

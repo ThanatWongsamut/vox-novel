@@ -576,41 +576,49 @@
                                 </div>
                             </div>
 
-                            <!-- Second voice: a body swap, a possession, a disguise -->
+                            <!-- Body swap / possession: whose mind is in this body -->
                             <details class="rounded-xl border border-slate-800/80 bg-slate-950/40"
-                                     {% if char.body_voice_description %}open{% endif %}>
+                                     {% if char.inhabiting %}open{% endif %}>
                                 <summary class="cursor-pointer px-2.5 py-1.5 text-[11px] text-slate-300 hover:text-white flex items-center gap-1.5">
                                     <i class="fa-solid fa-masks-theater text-amber-400 text-[10px]"></i>
-                                    Second voice
-                                    {% if char.body_voice_description %}
+                                    In another body
+                                    {% if char.inhabiting %}
                                     <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                        from ch. {{ char.body_voice_from_chapter|int }}
+                                        as {{ char.inhabiting }} from ch. {{ char.inhabiting_from_chapter|int }}
                                     </span>
                                     {% endif %}
                                 </summary>
                                 <div class="px-2.5 pb-2.5 space-y-1.5">
                                     <p class="text-[10px] text-slate-500 leading-relaxed">
-                                        For a character in someone else's body. Their spoken lines
-                                        are heard as the body; their thoughts stay their own voice.
+                                        For a character wearing someone else's body. Their spoken
+                                        lines take that body's voice; their thoughts stay their own.
                                         Leave empty unless the plot calls for it.
                                     </p>
-                                    <textarea id="body-voice-prompt-{{ key }}" rows="2"
-                                              class="w-full bg-slate-950/80 border border-slate-700/70 rounded-xl p-2.5 text-xs text-amber-200 placeholder-slate-500 focus:outline-none focus:border-amber-500 transition"
-                                              placeholder="e.g. ชายหนุ่มวัย 25 เสียงต่ำ นิ่ง">{{ char.body_voice_description or '' }}</textarea>
                                     <div class="flex items-center gap-1.5">
-                                        <label class="text-[10px] text-slate-400 shrink-0">Starts at chapter</label>
-                                        <input type="number" step="any" id="body-voice-from-{{ key }}"
-                                               value="{{ char.body_voice_from_chapter if char.body_voice_from_chapter is not none else '' }}"
-                                               class="w-24 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500">
+                                        <select id="inhabiting-{{ key }}"
+                                                class="flex-1 min-w-0 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-amber-200 focus:outline-none focus:border-amber-500">
+                                            <option value="">— nobody —</option>
+                                            {% for other in knowledge.characters.values() %}
+                                            {% if other.name_en != char.name_en %}
+                                            <option value="{{ other.name_en }}" {% if char.inhabiting == other.name_en %}selected{% endif %}>
+                                                {{ other.name_target or other.name_en }}
+                                            </option>
+                                            {% endif %}
+                                            {% endfor %}
+                                        </select>
+                                        <input type="number" step="any" id="inhabiting-from-{{ key }}"
+                                               placeholder="ch."
+                                               value="{{ char.inhabiting_from_chapter if char.inhabiting_from_chapter is not none else '' }}"
+                                               class="w-20 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500">
                                         <button type="button"
-                                                onclick="saveVoicePrompt('character', '{{ char.name_en }}', '{{ key }}', 'body')"
-                                                class="ml-auto py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] rounded-lg border border-slate-700 transition">
+                                                onclick="saveInhabiting('{{ char.name_en }}', '{{ key }}')"
+                                                class="py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] rounded-lg border border-slate-700 transition">
                                             Save
                                         </button>
                                     </div>
                                     <p class="text-[10px] text-slate-500">
-                                        Earlier chapters keep this character's own voice, so
-                                        re-synthesizing one does not re-voice it.
+                                        Earlier chapters are unaffected, so re-synthesizing one set
+                                        before the swap cannot re-voice it.
                                     </p>
                                 </div>
                             </details>
@@ -803,21 +811,38 @@
             el.focus();
         }
 
-        async function saveVoicePrompt(voiceType, charName = null, key = null, slot = 'own') {
+        async function saveInhabiting(charName, key) {
+            const inhabiting = document.getElementById('inhabiting-' + key).value;
+            const raw = document.getElementById('inhabiting-from-' + key).value.trim();
+            // Without a start chapter the swap would apply to the whole series,
+            // including chapters set before it happened.
+            if (inhabiting && raw === '') {
+                showVoiceToast('Enter the chapter the swap starts at.');
+                return;
+            }
+            const resp = await fetch('/api/voices/inhabiting', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    series_id: seriesId,
+                    target_lang: targetLang,
+                    character_name: charName,
+                    inhabiting: inhabiting,
+                    from_chapter: raw === '' ? null : Number(raw),
+                }),
+            });
+            if (resp.ok) {
+                showVoiceToast('Saved.');
+            } else {
+                const err = await resp.json();
+                showVoiceToast('Error: ' + (err.detail || 'Unknown error'));
+            }
+        }
+
+        async function saveVoicePrompt(voiceType, charName = null, key = null) {
             let promptVal = '';
-            let fromChapter = null;
             if (voiceType === 'narrator') {
                 promptVal = document.getElementById('narrator-voice-prompt').value.trim();
-            } else if (slot === 'body') {
-                promptVal = document.getElementById('body-voice-prompt-' + key).value.trim();
-                const raw = document.getElementById('body-voice-from-' + key).value.trim();
-                fromChapter = raw === '' ? null : Number(raw);
-                // Without a start chapter the second voice would apply to the
-                // whole series, re-voicing chapters set before the swap.
-                if (promptVal && fromChapter === null) {
-                    alert('Enter the chapter number the swap starts at.');
-                    return;
-                }
             } else {
                 promptVal = document.getElementById('voice-prompt-' + key).value.trim();
             }
@@ -832,8 +857,6 @@
                         voice_type: voiceType,
                         character_name: charName,
                         voice_description: promptVal,
-                        voice_slot: slot,
-                        body_voice_from_chapter: fromChapter,
                     }),
                 });
                 if (resp.ok) {

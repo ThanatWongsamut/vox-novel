@@ -1081,29 +1081,6 @@ async def update_voice_prompt(request: Request):
     voice_type = body.get("voice_type")  # "narrator" or "character"
     character_name = body.get("character_name")
     voice_description = body.get("voice_description", "").strip()
-    # "own", or "body" for the voice a character's spoken lines take while they
-    # are in someone else's body. Their thoughts keep their own voice.
-    voice_slot = body.get("voice_slot", "own")
-    from_chapter = body.get("body_voice_from_chapter")
-
-    if voice_slot not in ("own", "body"):
-        raise HTTPException(status_code=400, detail="voice_slot must be 'own' or 'body'")
-    if voice_slot == "body" and voice_type != "character":
-        raise HTTPException(status_code=400, detail="only a character has a body voice")
-    if from_chapter is not None:
-        try:
-            from_chapter = float(from_chapter)
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=400, detail="body_voice_from_chapter must be a number"
-            )
-    # A body voice with no start chapter would apply to the whole series,
-    # re-voicing chapters set before the swap.
-    if voice_slot == "body" and voice_description and from_chapter is None:
-        raise HTTPException(
-            status_code=400,
-            detail="a body voice needs the chapter number the swap starts at",
-        )
 
     if not series_id or not voice_type:
         raise HTTPException(status_code=400, detail="Missing required parameters")
@@ -1138,11 +1115,7 @@ async def update_voice_prompt(request: Request):
         )
     else:
         knowledge.update_character_voice(
-            char.name_en,
-            voice_description=voice_description,
-            voice_control_prompt=control,
-            slot=voice_slot,
-            from_chapter=from_chapter,
+            char.name_en, voice_description=voice_description, voice_control_prompt=control
         )
 
     knowledge_mgr.save(knowledge)
@@ -1150,6 +1123,56 @@ async def update_voice_prompt(request: Request):
         "status": "ok",
         "message": "Voice prompt updated successfully",
         "control_prompt": control,
+    }
+
+
+@web_app.post("/api/voices/inhabiting")
+async def update_inhabiting(request: Request):
+    """Record that a character wears another's body from a chapter on.
+
+    Edited on the mind, but read from both ends at synthesis, because the prose
+    names both: after the swap this character's spoken lines take the body's
+    voice, and lines attributed to the body are thought in this character's.
+    """
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    target_lang = body.get("target_lang", "th")
+    character_name = (body.get("character_name") or "").strip()
+    inhabiting = (body.get("inhabiting") or "").strip()
+    from_chapter = body.get("from_chapter")
+
+    if not character_name:
+        raise HTTPException(status_code=400, detail="character_name is required")
+    if from_chapter is not None and from_chapter != "":
+        try:
+            from_chapter = float(from_chapter)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="from_chapter must be a number")
+    else:
+        from_chapter = None
+    # Without a start chapter the swap would apply to the whole series, including
+    # chapters set before it happened.
+    if inhabiting and from_chapter is None:
+        raise HTTPException(
+            status_code=400, detail="a swap needs the chapter number it starts at"
+        )
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    char = knowledge.find_character(character_name)
+    if char is None:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    try:
+        knowledge.set_inhabiting(char.name_en, inhabiting or None, from_chapter)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    knowledge_mgr.save(knowledge)
+    return {
+        "status": "ok",
+        "character": char.name_en,
+        "inhabiting": char.inhabiting,
+        "from_chapter": char.inhabiting_from_chapter,
     }
 
 
