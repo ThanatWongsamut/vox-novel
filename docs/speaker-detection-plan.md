@@ -310,17 +310,23 @@ Chapter 169, per detection run:
 | | chars |
 | --- | --- |
 | chapter text | 12,362 |
-| registry block, resent per chunk | 5,532 |
+| registry block, resent per chunk | 9,029 |
 | chunks | 4 |
-| registry total | 22,128 |
+| registry total | 36,116 |
 
-The registry costs 1.79x what the content costs. Free on the local Ollama this
+The registry costs 2.9x what the content costs. Free on the local Ollama this
 was measured on; it matters only against a paid endpoint.
 
-Seven of the fourteen entries carry chapter-specific commentary left by the
-`--extract` run ("Not present in this chapter. Mentioned as..."). That is worth
-removing on its own account: on any chapter but the one it was extracted from,
-it is not merely bloat but wrong input.
+Seven of the fourteen entries carried chapter-specific commentary left by the
+`--extract` run ("Not present in this chapter. Mentioned as..."). Six of those
+had no speech style at all underneath it -- a character who never spoke has none
+observed, and what extraction wrote for them was chapter-68 plot summary sitting
+in a field meant for pronouns and particles. Cleared; the block went from 9,029
+to 8,200 characters even after a character was added to it.
+
+That was worth doing for correctness rather than cost: on any chapter but 68,
+the field was telling the model a character was "not present in this chapter"
+when it had no way to know.
 
 ### Does the registry have to be resent?
 
