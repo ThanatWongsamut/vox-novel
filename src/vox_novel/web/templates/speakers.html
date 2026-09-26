@@ -229,7 +229,7 @@
   document.getElementById('only-spoken').addEventListener('change', applyFilter);
   applyFilter();
 
-  async function save(row) {
+  async function save(row, changed) {
     const typeSelect = row.querySelector('.type-select');
     const speakerSelect = row.querySelector('.speaker-select');
     const voiceOverride = row.querySelector('.voice-override-select');
@@ -248,7 +248,10 @@
         paragraph: Number(row.dataset.index),
         speech_type: speechType,
         speaker: speechType === 'narration' ? '' : speakerSelect.value,
-        voice_override: voiceOverride.value,
+        // Only when this dropdown is the one that changed. Always sending it
+        // meant correcting a speaker could silently clear an override the
+        // dropdown failed to display, e.g. one stored under a renamed name.
+        ...(changed === voiceOverride ? { voice_override: voiceOverride.value } : {}),
       }),
     });
 
@@ -274,7 +277,7 @@
 
   document.querySelectorAll('.para-row').forEach(row => {
     row.querySelectorAll('select').forEach(el => {
-      el.addEventListener('change', () => save(row));
+      el.addEventListener('change', () => save(row, el));
     });
   });
 

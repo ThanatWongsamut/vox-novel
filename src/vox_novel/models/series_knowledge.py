@@ -1,7 +1,10 @@
+import logging
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, FiniteFloat, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class TermMapping(BaseModel):
@@ -96,21 +99,54 @@ class SeriesKnowledge(BaseModel):
 
     @model_validator(mode="after")
     def validate_occupancy_timeline(self):
-        """Refuse persisted timelines that would make voice choice ambiguous."""
-        entries = []
+        """Drop persisted periods that would make voice choice ambiguous.
+
+        Repairs rather than refuses. This runs on every load, and an exception
+        here makes the whole series unreadable -- every page 500s, including the
+        glossary where the problem would be fixed. Files written before the edit
+        paths enforced these rules can legitimately hold a period whose body was
+        since renamed or deleted, or two open-ended claims on one body. Edits go
+        through `add_occupancy`, which still refuses all of these outright.
+        """
+        accepted = []
         for mind in self.characters.values():
+            kept = []
             for interval in mind.occupancy_intervals:
                 body = self.find_character(interval.body, allow_prefix=False)
-                if body is None or body.name_en != interval.body:
-                    raise ValueError(f"unknown occupancy body {interval.body!r}")
-                if body.name_en == mind.name_en:
-                    raise ValueError("a character cannot inhabit themselves")
-                for other_mind, other in entries:
-                    if not self._overlap(interval, other):
-                        continue
-                    if other_mind == mind.name_en or other.body == interval.body:
-                        raise ValueError("overlapping occupancy periods")
-                entries.append((mind.name_en, interval))
+                problem = None
+                if body is None:
+                    problem = "its body is not a registered character"
+                elif body.name_en == mind.name_en:
+                    problem = "a character cannot inhabit themselves"
+                else:
+                    # An alias still identifies the body; store the canonical name.
+                    interval.body = body.name_en
+                    for other_mind, other in accepted:
+                        if self._overlap(interval, other) and (
+                            other_mind == mind.name_en or other.body == interval.body
+                        ):
+                            problem = "it overlaps another period"
+                            break
+                if problem:
+                    logger.warning(
+                        "Dropping occupancy of %r by %r from %s: %s",
+                        interval.body, mind.name_en, self.series_id, problem,
+                    )
+                    continue
+                kept.append(interval)
+                accepted.append((mind.name_en, interval))
+
+            if len(kept) != len(mind.occupancy_intervals):
+                mind.occupancy_intervals = kept
+                # Keep the legacy mirror honest, or it would re-create the
+                # dropped period on the next load.
+                only = kept[0] if len(kept) == 1 else None
+                if only and only.end is None and only.start.paragraph_index == 1:
+                    mind.inhabiting = only.body
+                    mind.inhabiting_from_chapter = only.start.chapter_number
+                else:
+                    mind.inhabiting = None
+                    mind.inhabiting_from_chapter = None
         return self
 
     def add_term(

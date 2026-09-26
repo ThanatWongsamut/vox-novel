@@ -64,15 +64,56 @@ class TestOccupancyTimeline(unittest.TestCase):
         self.assertEqual(loaded.voice_for(loaded.find_character("A"), "dialogue", 10, 1).name_en, "B")
         self.assertEqual(len(loaded.find_character("A").occupancy_intervals), 1)
 
-    def test_invalid_saved_timeline_is_rejected_on_load(self):
+    def test_an_overlapping_saved_period_is_dropped_on_load_not_fatal(self):
+        # Load runs on every page; refusing the file would 500 the whole series,
+        # including the glossary where the conflict would be fixed.
         self.k.add_occupancy("A", "B", pos(10, 2), pos(10, 5))
         raw = self.k.model_dump()
         raw["characters"]["c"]["occupancy_intervals"] = [{
             "body": "B", "start": {"chapter_number": 10, "paragraph_index": 3},
             "end": {"chapter_number": 10, "paragraph_index": 6},
         }]
+        with self.assertLogs("vox_novel.models.series_knowledge", "WARNING"):
+            loaded = SeriesKnowledge.model_validate(raw)
+        self.assertEqual(len(loaded.find_character("A").occupancy_intervals), 1)
+        self.assertEqual(loaded.find_character("C").occupancy_intervals, [])
+
+    def test_a_legacy_swap_onto_a_deleted_body_loads(self):
+        # Before the edit paths guarded it, deleting or renaming the body left
+        # the mind's legacy field pointing at nothing.
+        raw = self.k.model_dump()
+        raw["characters"]["a"]["inhabiting"] = "gone"
+        raw["characters"]["a"]["inhabiting_from_chapter"] = 100.0
+        with self.assertLogs("vox_novel.models.series_knowledge", "WARNING"):
+            loaded = SeriesKnowledge.model_validate(raw)
+        a = loaded.find_character("A")
+        self.assertEqual(a.occupancy_intervals, [])
+        # Cleared too, or the next load would migrate the dead period back in.
+        self.assertIsNone(a.inhabiting)
+        self.assertIsNone(a.inhabiting_from_chapter)
+
+    def test_two_legacy_open_claims_on_one_body_keep_the_first(self):
+        raw = self.k.model_dump()
+        for key in ("a", "c"):
+            raw["characters"][key]["inhabiting"] = "B"
+            raw["characters"][key]["inhabiting_from_chapter"] = 100.0
+        with self.assertLogs("vox_novel.models.series_knowledge", "WARNING"):
+            loaded = SeriesKnowledge.model_validate(raw)
+        self.assertEqual(loaded.find_character("A").inhabiting, "B")
+        self.assertIsNone(loaded.find_character("C").inhabiting)
+
+    def test_a_legacy_swap_naming_the_body_by_alias_is_kept(self):
+        self.k.find_character("B").aliases.append("bee")
+        raw = self.k.model_dump()
+        raw["characters"]["a"]["inhabiting"] = "bee"
+        raw["characters"]["a"]["inhabiting_from_chapter"] = 100.0
+        loaded = SeriesKnowledge.model_validate(raw)
+        self.assertEqual(loaded.find_character("A").occupancy_intervals[0].body, "B")
+
+    def test_the_edit_path_still_refuses_an_overlap(self):
+        self.k.add_occupancy("A", "B", pos(10, 2), pos(10, 5))
         with self.assertRaises(ValueError):
-            SeriesKnowledge.model_validate(raw)
+            self.k.add_occupancy("C", "B", pos(10, 3), pos(10, 6))
 
     def test_prompt_context_marks_the_exact_transition(self):
         self.k.add_occupancy("A", "B", pos(10, 3), pos(10, 5))
@@ -183,6 +224,40 @@ class TestOccupancyWeb(unittest.TestCase):
             **base, "start_paragraph": 5, "end_paragraph": 4,
         }).status_code, 400)
         self.assertEqual(len(web.knowledge_mgr.load_or_init("s").find_character("A").occupancy_intervals), 1)
+
+    def _override_chapter(self):
+        chapter = Chapter(id="ov", book_id="s", title="t", url="u", chapter_number=10,
+                          paragraphs=[Paragraph(index=1, text="line", speaker="A",
+                                                speech_type="dialogue", voice_override="B")])
+        web.storage.save_chapter(chapter)
+        k = web.knowledge_mgr.load_or_init("s")
+        self.assertTrue(k.rename_character("B", "New B"))
+        web.knowledge_mgr.save(k)
+
+    def test_an_override_on_a_renamed_character_still_shows_as_selected(self):
+        # The stored name is now an alias. Unless the page maps it to the current
+        # name, no option is selected and the row reads "voice: auto".
+        self._override_chapter()
+        page = self.client.get("/series/s/speakers/ov")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('<option value="New B" selected>', page.text)
+
+    def test_editing_the_speaker_does_not_touch_the_override(self):
+        # The page now omits voice_override unless that dropdown changed; the
+        # endpoint must leave it alone when the key is absent.
+        self._override_chapter()
+        response = self.client.post("/api/speakers/update", json={
+            "series_id": "s", "chapter_id": "ov", "paragraph": 1,
+            "speaker": "A", "speech_type": "thought",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(web.storage.get_chapter("s", "ov").paragraphs[0].voice_override, "B")
+
+    def test_the_page_sends_the_override_only_when_it_changed(self):
+        self._override_chapter()
+        page = self.client.get("/series/s/speakers/ov").text
+        self.assertIn("changed === voiceOverride ? { voice_override", page)
+        self.assertNotIn("voice_override: voiceOverride.value,\n", page)
 
 
 if __name__ == "__main__":

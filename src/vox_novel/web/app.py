@@ -855,6 +855,14 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
         raise HTTPException(status_code=404, detail="Chapter not found")
 
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    # A stored override may name a character since renamed; the old name is an
+    # alias, so it still resolves at synthesis. Show it under the current name,
+    # or the dropdown selects nothing and reads as "auto". Display only.
+    for p in chapter.paragraphs:
+        if p.voice_override and p.voice_override.lower() != "narrator":
+            match = knowledge.find_character(p.voice_override, allow_prefix=False)
+            if match is not None:
+                p.voice_override = match.name_en
     characters = sorted(
         knowledge.characters.values(), key=lambda c: (not c.is_narrator, c.name_en.lower())
     )
