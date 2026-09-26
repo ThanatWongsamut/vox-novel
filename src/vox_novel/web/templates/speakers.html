@@ -143,6 +143,7 @@
           model said <span class="text-red-400/80 font-mono">{{ p.speaker_detected or 'narration' }}</span>
         </p>
         {% endif %}
+        <p class="text-[10px] text-amber-300/80 mt-0.5">Voice: <span class="resolved-voice">{{ resolved_voices[p.index] }}</span></p>
       </div>
 
       <div class="flex items-center gap-1.5 shrink-0">
@@ -150,6 +151,16 @@
                        text-[10px] text-slate-200 focus:outline-none focus:border-indigo-500">
           {% for t in ('narration', 'dialogue', 'thought') %}
           <option value="{{ t }}" {% if p.speech_type == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+
+        <select class="voice-override-select bg-slate-800 border border-slate-700 rounded-md px-1.5 py-1
+                       text-[10px] text-amber-200 focus:outline-none focus:border-amber-500"
+                title="Override the resolved voice for this paragraph only">
+          <option value="" {% if not p.voice_override %}selected{% endif %}>voice: auto</option>
+          <option value="narrator" {% if p.voice_override == 'narrator' %}selected{% endif %}>voice: narrator</option>
+          {% for c in characters %}
+          <option value="{{ c.name_en }}" {% if p.voice_override == c.name_en %}selected{% endif %}>voice: {{ c.name_target or c.name_en }}</option>
           {% endfor %}
         </select>
 
@@ -221,6 +232,7 @@
   async function save(row) {
     const typeSelect = row.querySelector('.type-select');
     const speakerSelect = row.querySelector('.speaker-select');
+    const voiceOverride = row.querySelector('.voice-override-select');
     const tick = row.querySelector('.saved-tick');
     const speechType = typeSelect.value;
 
@@ -236,6 +248,7 @@
         paragraph: Number(row.dataset.index),
         speech_type: speechType,
         speaker: speechType === 'narration' ? '' : speakerSelect.value,
+        voice_override: voiceOverride.value,
       }),
     });
 
@@ -248,6 +261,7 @@
 
     const payload = await res.json();
     if (payload.score) renderScore(payload.score);
+    row.querySelector('.resolved-voice').textContent = payload.voice;
 
     row.dataset.spoken = speechType === 'narration' ? 'no' : 'yes';
     row.className = row.className

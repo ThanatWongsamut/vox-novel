@@ -32,6 +32,11 @@ speak later. For each character record:
 - is_narrator: true for the point-of-view narrator character, if the novel is written
   in first person.
 
+For a body swap or possession, keep the mind and the original body owner as
+separate characters. A body's visible name is not an alias for its occupant.
+Do not infer the timing of a swap from this excerpt; the curated occupancy
+timeline supplies those facts during attribution.
+
 Also fill narration_note: describe the narration point of view, including whether it
 shifts. If the first-person narrator's real name is revealed or strongly implied, note
 it -- an unnamed narrator is the single most common cause of misattributed lines.
@@ -63,6 +68,11 @@ TYPES -- one per paragraph
   so choose the speaker whose words dominate it.
 
 SPEAKER ATTRIBUTION
+`speaker` means the actual character/mind responsible for the words, not the
+name of the body visible to others. If the occupancy timeline says A occupies
+B's body, dialogue attributed in the prose to B may be A's speech. Use the
+timeline and scene evidence to decide; never treat a body name as an alias that
+merges the two characters. A displaced mind may still think independently.
 Attribute using, in rough order of strength:
 1. Explicit attribution tags in adjacent narration, before or after the quote.
 2. Speech register: pronouns, politeness particles, formality. Match against each
@@ -70,8 +80,8 @@ Attribute using, in rough order of strength:
 3. Turn-taking: in a two-person exchange, speakers usually alternate.
 4. Content: what is said, and what it logically responds to.
 
-- speaker must be a canonical name copied EXACTLY from the registry. Never invent a
-  variant spelling.
+- speaker must be a `canonical_name` copied EXACTLY from the registry. The
+  occupancy timeline uses these same names. Never invent a variant spelling.
 - narration paragraphs have speaker = null.
 - Only attribute to characters actually present and awake in the scene. Never to
   someone asleep, absent, or merely being discussed.

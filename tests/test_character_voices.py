@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from vox_novel.models.domain import Chapter, Paragraph
-from vox_novel.models.series_knowledge import SeriesKnowledge
+from vox_novel.models.series_knowledge import SeriesKnowledge, StoryPosition
 from vox_novel.tts.voxcpm import VoxCPM2TTS
 
 
@@ -157,11 +157,19 @@ class TestADescribedCharacterGetsTheirOwnAnchor(CharacterVoiceTestCase):
         )
         self.assertEqual(seen[1][1], "ริโก้_ref.wav")
 
+    def test_a_legacy_narrator_speaker_uses_the_narrator_voice(self):
+        self.k.add_character("narrator", "narrator")
+        self.k.find_character("narrator").voice_description = "หญิงสาว เสียงสูง"
+        seen = self.run_chapter(
+            self.engine(), self.chapter([("narrator", "narration")]), self.k, Translator()
+        )
+        self.assertEqual(seen[1][0], VOICES["เสียงบรรยายผู้ชาย"])
+
 
 class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
     """A body holding someone else's mind speaks as the body and thinks as the
-    occupant. Occupancy is recorded on the *body*, because attribution can only
-    go by the name the prose uses, and the prose keeps using the body's name."""
+    occupant. Occupancy is recorded on the mind, even when the prose names the
+    visible body."""
 
     SWAP_AT = 100.0
 
@@ -175,7 +183,7 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         self.k.set_inhabiting("เยเรเมีย", "อาซาเซล", self.SWAP_AT)
 
     def rows(self):
-        return [("อาซาเซล", "dialogue"), ("อาซาเซล", "thought")]
+        return [("เยเรเมีย", "dialogue"), ("เยเรเมีย", "thought")]
 
     def body(self):
         return VOICES["ชายหนุ่ม เสียงต่ำ"]
@@ -198,16 +206,14 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         # spoke for a hundred chapters before anyone occupied him, and those
         # chapters need no configuration at all.
         seen = self.run_chapter(
-            self.engine(), self.chapter(self.rows(), number=50.0), self.k, Translator()
+            self.engine(), self.chapter([("อาซาเซล", "dialogue"), ("อาซาเซล", "thought")], number=50.0), self.k, Translator()
         )
         self.assertEqual(seen[1][0], self.body())
         self.assertEqual(seen[2][0], self.body())
         self.assertEqual(seen[1][1], seen[2][1])
 
-    def test_either_naming_resolves_to_the_same_pair_of_voices(self):
-        """The prose names both -- one chapter calls her by the body she wears,
-        the next by her own name while she still wears it. Attribution reports
-        whichever name it was given, so both have to land on the same voices."""
+    def test_the_body_name_is_not_an_alias_for_the_occupants_mind(self):
+        """An original owner may still think; a body name cannot stand for both minds."""
         rows = [
             ("เยเรเมีย", "dialogue"), ("เยเรเมีย", "thought"),
             ("อาซาเซล", "dialogue"), ("อาซาเซล", "thought"),
@@ -217,8 +223,8 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         )
         self.assertEqual(seen[1][0], self.body(), "her speech should sound like the body")
         self.assertEqual(seen[2][0], self.mind(), "her thoughts should stay her own")
-        self.assertEqual(seen[3][0], self.body())
-        self.assertEqual(seen[4][0], self.mind(), "the body thinks in its wearer's voice")
+        self.assertEqual(seen[3][0], VOICES["เสียงบรรยายผู้ชาย"], "displaced mind has no known speaking body")
+        self.assertEqual(seen[4][0], self.body(), "the original mind keeps its own thought voice")
 
     def test_a_character_outside_the_swap_is_untouched(self):
         self.k.add_character("คันน่า", "คันน่า")
@@ -230,19 +236,17 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         )
         self.assertEqual(seen[1][0], seen[2][0])
 
-    def test_a_chapter_with_no_number_keeps_the_body_voice(self):
+    def test_a_chapter_with_no_number_requires_voice_review(self):
         # Nothing places it relative to the swap, so guessing risks the wrong voice.
         seen = self.run_chapter(
             self.engine(), self.chapter(self.rows(), number=None), self.k, Translator()
         )
-        self.assertEqual(seen[2][0], self.body())
+        self.assertEqual(seen[1][0], VOICES["เสียงบรรยายผู้ชาย"])
+        self.assertEqual(seen[2][0], self.mind())
 
     def test_a_start_chapter_is_required(self):
-        self.k.find_character("เยเรเมีย").inhabiting_from_chapter = None
-        seen = self.run_chapter(
-            self.engine(), self.chapter(self.rows(), number=169.0), self.k, Translator()
-        )
-        self.assertEqual(seen[2][0], self.body())
+        with self.assertRaises(ValueError):
+            self.k.set_inhabiting("เยเรเมีย", "อาซาเซล", None)
 
     def test_each_voice_is_derived_once_and_cached_on_its_own_profile(self):
         translator = Translator()
@@ -257,6 +261,21 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         )
         # Narrator, body, occupant -- one call each, not one per paragraph.
         self.assertEqual(len(translator.calls), 3, translator.calls)
+
+    def test_tts_switches_at_paragraph_boundaries_and_back(self):
+        self.k.set_inhabiting("เยเรเมีย", None, None)
+        self.k.add_occupancy("เยเรเมีย", "อาซาเซล", StoryPosition(chapter_number=169, paragraph_index=2),
+                             StoryPosition(chapter_number=169, paragraph_index=4))
+        chap = self.chapter([("เยเรเมีย", "dialogue")] * 4, number=169)
+        seen = self.run_chapter(self.engine(), chap, self.k, Translator())
+        self.assertEqual([seen[i][0] for i in range(1, 5)],
+                         [self.mind(), self.body(), self.body(), self.mind()])
+
+    def test_voice_override_is_used_for_an_exceptional_line(self):
+        chap = self.chapter([("เยเรเมีย", "dialogue")], number=169)
+        chap.paragraphs[0].voice_override = "เยเรเมีย"
+        seen = self.run_chapter(self.engine(), chap, self.k, Translator())
+        self.assertEqual(seen[1][0], self.mind())
 
     def test_a_body_the_registry_does_not_know_is_refused(self):
         # The mechanism is a redirect to that character's voice, so a name
@@ -273,7 +292,8 @@ class TestASwappedBodySplitsSpeechFromThought(CharacterVoiceTestCase):
         seen = self.run_chapter(
             self.engine(), self.chapter(self.rows(), number=169.0), self.k, Translator()
         )
-        self.assertEqual(seen[2][0], self.body())
+        self.assertEqual(seen[1][0], self.mind())
+        self.assertEqual(seen[2][0], self.mind())
 
 
 class TestTheGlossaryEditsTheSwap(unittest.TestCase):
@@ -351,7 +371,7 @@ class TestTheGlossaryEditsTheSwap(unittest.TestCase):
         self.save()
         res = self.client.get("/series/b/glossary")
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertIn("In another body", res.text)
+        self.assertIn("Body occupancy timeline", res.text)
         self.assertIn("เยเรเมีย", res.text)
 
 

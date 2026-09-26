@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 
 class TermMapping(BaseModel):
@@ -10,6 +10,30 @@ class TermMapping(BaseModel):
     category: str = "general"  # gaming, character, location, item, skill, monster, honorific
     aliases: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
+
+
+class StoryPosition(BaseModel):
+    """A paragraph boundary in story order. The paragraph at this position is included."""
+
+    chapter_number: FiniteFloat
+    paragraph_index: int = Field(default=1, ge=1)
+
+    def key(self) -> tuple[float, int]:
+        return self.chapter_number, self.paragraph_index
+
+
+class OccupancyInterval(BaseModel):
+    """A mind occupies a body from start until end (exclusive)."""
+
+    body: str
+    start: StoryPosition
+    end: Optional[StoryPosition] = None
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        if self.end is not None and self.end.key() <= self.start.key():
+            raise ValueError("occupancy end must be after start")
+        return self
 
 
 class CharacterProfile(BaseModel):
@@ -34,20 +58,21 @@ class CharacterProfile(BaseModel):
     speech_style: Optional[str] = None
     line_count: int = 0
     last_seen_chapter: Optional[str] = None
-    # Body swap, possession, a mind wearing someone else's shape: this character
-    # is inside `inhabiting`'s body from `inhabiting_from_chapter` on.
-    #
-    # Recorded once, on the mind, but read from both ends -- because the prose
-    # names both. One chapter calls her by the body she is wearing, the next
-    # calls her by her own name while she is still wearing it, and attribution
-    # can only ever report the name it was given. So a line attributed to the
-    # mind is spoken in the body's voice, and a line attributed to the body is
-    # *thought* in the mind's. Either way the listener hears the body everyone
-    # in the scene hears, and the mind the character actually is.
+    # Stored on the mind. Multiple bounded intervals support changes within a
+    # chapter, returns, and later swaps. The old fields remain as a compatibility
+    # mirror for a single open-ended interval in existing knowledge files/API.
+    occupancy_intervals: List[OccupancyInterval] = Field(default_factory=list)
     inhabiting: Optional[str] = None
-    # By chapter_number. Earlier chapters are unaffected, so re-synthesizing one
-    # set before the swap cannot silently re-voice it. Unset means never.
     inhabiting_from_chapter: Optional[float] = None
+
+    @model_validator(mode="after")
+    def migrate_legacy_occupancy(self):
+        if self.inhabiting and self.inhabiting_from_chapter is not None and not self.occupancy_intervals:
+            self.occupancy_intervals = [OccupancyInterval(
+                body=self.inhabiting,
+                start=StoryPosition(chapter_number=self.inhabiting_from_chapter),
+            )]
+        return self
 
 
 class SeriesKnowledge(BaseModel):
@@ -68,6 +93,25 @@ class SeriesKnowledge(BaseModel):
     style_guidelines: List[str] = Field(default_factory=list)
     custom_system_prompt: Optional[str] = None
     last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+    @model_validator(mode="after")
+    def validate_occupancy_timeline(self):
+        """Refuse persisted timelines that would make voice choice ambiguous."""
+        entries = []
+        for mind in self.characters.values():
+            for interval in mind.occupancy_intervals:
+                body = self.find_character(interval.body, allow_prefix=False)
+                if body is None or body.name_en != interval.body:
+                    raise ValueError(f"unknown occupancy body {interval.body!r}")
+                if body.name_en == mind.name_en:
+                    raise ValueError("a character cannot inhabit themselves")
+                for other_mind, other in entries:
+                    if not self._overlap(interval, other):
+                        continue
+                    if other_mind == mind.name_en or other.body == interval.body:
+                        raise ValueError("overlapping occupancy periods")
+                entries.append((mind.name_en, interval))
+        return self
 
     def add_term(
         self,
@@ -192,54 +236,101 @@ class SeriesKnowledge(BaseModel):
             self.narrator_voice_control_prompt = voice_control_prompt
         self.last_updated = datetime.utcnow()
 
-    def _inhabits(self, character: CharacterProfile, chapter_number) -> bool:
-        """True where this character is wearing someone else's body by now."""
-        return bool(
-            character.inhabiting
-            and character.inhabiting_from_chapter is not None
-            and chapter_number is not None
-            and chapter_number >= character.inhabiting_from_chapter
+    @staticmethod
+    def _overlap(a: OccupancyInterval, b: OccupancyInterval) -> bool:
+        a_end = a.end.key() if a.end else (float("inf"), 1)
+        b_end = b.end.key() if b.end else (float("inf"), 1)
+        return a.start.key() < b_end and b.start.key() < a_end
+
+    @staticmethod
+    def _active(interval: OccupancyInterval, position: StoryPosition) -> bool:
+        return interval.start.key() <= position.key() and (
+            interval.end is None or position.key() < interval.end.key()
         )
 
-    def _wearer_of(self, body: CharacterProfile, chapter_number):
-        """Whose mind is inside this body, if anyone's, by this chapter."""
+    def add_occupancy(
+        self, mind_name: str, body_name: str, start: StoryPosition,
+        end: Optional[StoryPosition] = None,
+    ) -> OccupancyInterval:
+        """Add one occupancy period, rejecting ambiguous simultaneous assignments."""
+        mind = self.find_character(mind_name, allow_prefix=False)
+        body = self.find_character(body_name, allow_prefix=False)
+        if mind is None or body is None:
+            raise ValueError("mind and body must both be registered characters")
+        if mind.name_en == body.name_en:
+            raise ValueError("a character cannot inhabit themselves")
+        interval = OccupancyInterval(body=body.name_en, start=start, end=end)
         for other in self.characters.values():
-            if other.inhabiting == body.name_en and self._inhabits(other, chapter_number):
-                return other
-        return None
+            for existing in other.occupancy_intervals:
+                if not self._overlap(interval, existing):
+                    continue
+                if other.name_en == mind.name_en:
+                    raise ValueError("one mind cannot occupy two bodies at once")
+                if existing.body == body.name_en:
+                    raise ValueError("two minds cannot occupy one body at once")
+        mind.occupancy_intervals.append(interval)
+        mind.occupancy_intervals.sort(key=lambda item: item.start.key())
+        # The old fields can describe only one open-ended chapter-boundary rule.
+        if len(mind.occupancy_intervals) == 1 and end is None and start.paragraph_index == 1:
+            mind.inhabiting = body.name_en
+            mind.inhabiting_from_chapter = start.chapter_number
+        else:
+            mind.inhabiting = None
+            mind.inhabiting_from_chapter = None
+        self.last_updated = datetime.utcnow()
+        return interval
+
+    def remove_occupancy(self, mind_name: str, index: int) -> bool:
+        mind = self.find_character(mind_name, allow_prefix=False)
+        if mind is None or not 0 <= index < len(mind.occupancy_intervals):
+            return False
+        mind.occupancy_intervals.pop(index)
+        mind.inhabiting = None
+        mind.inhabiting_from_chapter = None
+        if len(mind.occupancy_intervals) == 1:
+            only = mind.occupancy_intervals[0]
+            if only.end is None and only.start.paragraph_index == 1:
+                mind.inhabiting = only.body
+                mind.inhabiting_from_chapter = only.start.chapter_number
+        self.last_updated = datetime.utcnow()
+        return True
+
+    def occupancy_at(self, position: StoryPosition) -> Dict[str, str]:
+        """Active mind -> body assignments, with canonical character names."""
+        return {
+            mind.name_en: interval.body
+            for mind in self.characters.values()
+            for interval in mind.occupancy_intervals
+            if self._active(interval, position)
+        }
 
     def voice_for(
         self,
         character: CharacterProfile,
         speech_type: Optional[str],
         chapter_number: Optional[float] = None,
-    ) -> CharacterProfile:
-        """Whose voice this line is heard in.
-
-        A mind wearing another body speaks in that body's voice and thinks in
-        its own. Attribution reports whichever name the prose used, so both
-        namings have to resolve to the same pair of voices:
-
-            line attributed to the mind, speaking  -> the body's voice
-            line attributed to the mind, thinking  -> its own voice
-            line attributed to the body, speaking  -> the body's voice
-            line attributed to the body, thinking  -> the wearer's voice
-
-        Before the swap chapter -- or with no chapter number to place the line
-        by -- the character is simply themselves. Resolution is one hop, so two
-        characters wearing each other cannot loop.
-        """
-        if self._inhabits(character, chapter_number):
-            if speech_type == "dialogue":
-                body = self.find_character(character.inhabiting)
-                if body is not None:
-                    return body
-            return character
-
+        paragraph_index: int = 1,
+    ) -> Optional[CharacterProfile]:
+        """Resolve a mind's voice at a paragraph. None means review is required."""
         if speech_type == "thought":
-            wearer = self._wearer_of(character, chapter_number)
-            if wearer is not None:
-                return wearer
+            return character
+        if speech_type != "dialogue":
+            return character
+        if chapter_number is None:
+            # A chapter without a position cannot be placed against any swap.
+            affected = bool(character.occupancy_intervals) or any(
+                interval.body == character.name_en
+                for c in self.characters.values() for interval in c.occupancy_intervals
+            )
+            return None if affected else character
+        position = StoryPosition(chapter_number=chapter_number, paragraph_index=paragraph_index)
+        active = self.occupancy_at(position)
+        if character.name_en in active:
+            return self.find_character(active[character.name_en], allow_prefix=False)
+        # The default body is unavailable if another mind occupies it. Do not
+        # silently voice the displaced mind as the occupant's body.
+        if character.name_en in active.values():
+            return None
         return character
 
     def update_character_voice(
@@ -267,26 +358,29 @@ class SeriesKnowledge(BaseModel):
     def set_inhabiting(
         self, name_en: str, inhabiting: Optional[str], from_chapter: Optional[float]
     ) -> bool:
-        """Record that this character wears another's body from a chapter on.
-
-        `inhabiting` must name a character already in the registry: the whole
-        mechanism is a redirect to that character's voice, so a name nothing
-        resolves to would silently do nothing at synthesis.
-        """
-        char = self.find_character(name_en)
+        """Legacy API: replace a single open-ended chapter-boundary period."""
+        char = self.find_character(name_en, allow_prefix=False)
         if not char:
             return False
+        if char.occupancy_intervals and char.inhabiting is None:
+            raise ValueError("edit this mind's occupancy timeline instead of replacing it with the legacy setting")
         if not inhabiting:
+            char.occupancy_intervals = []
             char.inhabiting = None
             char.inhabiting_from_chapter = None
         else:
-            body = self.find_character(inhabiting)
-            if body is None:
-                raise ValueError(f"no character named {inhabiting!r}")
-            if body.name_en == char.name_en:
-                raise ValueError("a character cannot inhabit themselves")
-            char.inhabiting = body.name_en
-            char.inhabiting_from_chapter = from_chapter
+            if from_chapter is None:
+                raise ValueError("a swap needs its start chapter")
+            previous = char.occupancy_intervals
+            char.occupancy_intervals = []
+            try:
+                self.add_occupancy(
+                    char.name_en, inhabiting,
+                    StoryPosition(chapter_number=from_chapter),
+                )
+            except ValueError:
+                char.occupancy_intervals = previous
+                raise
         self.last_updated = datetime.utcnow()
         return True
 
@@ -363,20 +457,41 @@ class SeriesKnowledge(BaseModel):
         self.last_updated = datetime.utcnow()
 
     def remove_character(self, name_en: str) -> bool:
-        key = name_en.strip().lower()
-        if key in self.characters:
-            del self.characters[key]
-            self.last_updated = datetime.utcnow()
-            return True
-        # Also try finding by normalized key
         char = self.find_character(name_en)
-        if char:
-            k = char.name_en.strip().lower()
-            if k in self.characters:
-                del self.characters[k]
-                self.last_updated = datetime.utcnow()
-                return True
-        return False
+        if not char:
+            return False
+        for other in self.characters.values():
+            if any(period.body == char.name_en for period in other.occupancy_intervals):
+                raise ValueError(f"{char.name_en} is used as a body in the occupancy timeline")
+        del self.characters[char.name_en.strip().lower()]
+        self.last_updated = datetime.utcnow()
+        return True
+
+    def rename_character(self, old_name: str, new_name: str) -> bool:
+        """Preserve the character and all timeline references when renaming."""
+        char = self.find_character(old_name, allow_prefix=False)
+        if char is None:
+            return False
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("new character name is required")
+        collision = self.find_character(new_name, allow_prefix=False)
+        if collision is not None and collision is not char:
+            raise ValueError(f"character {new_name!r} already exists")
+        previous = char.name_en
+        del self.characters[previous.lower()]
+        char.name_en = new_name
+        if previous not in char.aliases:
+            char.aliases.append(previous)
+        self.characters[new_name.lower()] = char
+        for other in self.characters.values():
+            for period in other.occupancy_intervals:
+                if period.body == previous:
+                    period.body = new_name
+            if other.inhabiting == previous:
+                other.inhabiting = new_name
+        self.last_updated = datetime.utcnow()
+        return True
 
     def remove_term(self, source: str) -> bool:
         key = source.strip().lower()

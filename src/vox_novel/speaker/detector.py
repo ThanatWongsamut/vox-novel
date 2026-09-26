@@ -17,7 +17,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from vox_novel.models.domain import Chapter, Paragraph
-from vox_novel.models.series_knowledge import SeriesKnowledge
+from vox_novel.models.series_knowledge import SeriesKnowledge, StoryPosition
 from vox_novel.speaker.chunking import Chunk, format_chunk, make_chunks
 from vox_novel.speaker.models import ChunkAnnotation, RegistryDraft, Segment
 from vox_novel.speaker.prompts import ANNOTATE_SYSTEM, EXTRACT_SYSTEM, registry_block
@@ -43,7 +43,10 @@ def _paragraph_text(p: Paragraph, use_translated: bool) -> str:
     return (p.text or "").strip()
 
 
-def _scoped_registry(knowledge: SeriesKnowledge, chapters_seen: int) -> List[Dict[str, Any]]:
+def _scoped_registry(
+    knowledge: SeriesKnowledge, chapters_seen: int,
+    required_names: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
     """The registry as the model should see it: narrator first, then recent and
     high-volume speakers."""
     characters = list(knowledge.characters.values())
@@ -52,10 +55,15 @@ def _scoped_registry(knowledge: SeriesKnowledge, chapters_seen: int) -> List[Dic
             key=lambda c: (c.is_narrator, c.line_count),
             reverse=True,
         )
-        characters = characters[:MAX_REGISTRY_SHOWN]
+        required = required_names or set()
+        characters = (
+            [c for c in characters if c.name_en in required]
+            + [c for c in characters if c.name_en not in required]
+        )[:MAX_REGISTRY_SHOWN]
     return [
         {
             "name": c.name_target or c.name_en,
+            "canonical_name": c.name_en,
             "aliases": c.aliases,
             "gender": c.gender or "unknown",
             "speech_style": c.speech_style or "",
@@ -225,6 +233,7 @@ async def _annotate_pass(
     chapter_id: str,
     progress_callback=None,
     label: str = "",
+    chapter_number: Optional[float] = None,
 ) -> List[Segment]:
     """One full annotation pass over a chapter, including the repair pass."""
     chunks = make_chunks(indexed, chunk_size=CHUNK_SIZE, context_size=CONTEXT_SIZE)
@@ -233,7 +242,7 @@ async def _annotate_pass(
     for n, chunk in enumerate(chunks, start=1):
         if progress_callback:
             await _report(progress_callback, n, len(chunks), label)
-        segments.extend(await _annotate_chunk(chunk, knowledge, translator, chapter_id))
+        segments.extend(await _annotate_chunk(chunk, knowledge, translator, chapter_id, chapter_number))
 
     # A model that skipped paragraphs -- common near the end of a long chunk --
     # gets one more pass over just the gaps before they fall back to narration.
@@ -242,7 +251,7 @@ async def _annotate_pass(
     if missing:
         logger.info(f"Repairing {len(missing)} unannotated paragraph(s)...")
         segments.extend(
-            await _annotate_chunk(Chunk(context=[], target=missing), knowledge, translator, chapter_id)
+            await _annotate_chunk(Chunk(context=[], target=missing), knowledge, translator, chapter_id, chapter_number)
         )
     return segments
 
@@ -274,6 +283,7 @@ async def annotate_chapter(
     all_segments = await _annotate_pass(
         indexed, knowledge, translator, chapter.id, progress_callback,
         label="Attributing" if confirm_with else "",
+        chapter_number=chapter.chapter_number,
     )
 
     disagreements: List[Dict[str, Any]] = []
@@ -281,6 +291,7 @@ async def annotate_chapter(
         second = await _annotate_pass(
             indexed, knowledge, confirm_with, chapter.id, progress_callback,
             label="Confirming",
+            chapter_number=chapter.chapter_number,
         )
         _canonicalize(second, knowledge)
         _canonicalize(all_segments, knowledge)
@@ -315,14 +326,49 @@ async def annotate_chapter(
     }
 
 
+def _occupancy_block(
+    knowledge: SeriesKnowledge, chapter_number: Optional[float], indices: List[int]
+) -> str:
+    if not indices or not any(c.occupancy_intervals for c in knowledge.characters.values()):
+        return ""
+    if chapter_number is None:
+        return "OCCUPANCY: chapter position unknown; do not infer a swap from this registry."
+    runs = []
+    for index in sorted(indices):
+        active = knowledge.occupancy_at(
+            StoryPosition(chapter_number=chapter_number, paragraph_index=index)
+        )
+        state = tuple(sorted(active.items()))
+        if runs and runs[-1][2] == state and runs[-1][1] + 1 == index:
+            runs[-1] = (runs[-1][0], index, state)
+        else:
+            runs.append((index, index, state))
+    lines = ["OCCUPANCY FOR TARGET PARAGRAPHS (mind -> visible body):"]
+    for start, end, state in runs:
+        where = f"[{start}]" if start == end else f"[{start}]-[{end}]"
+        mapping = ", ".join(f"{mind} -> {body}" for mind, body in state)
+        lines.append(f"{where}: {mapping or 'no active body change'}")
+    return "\n".join(lines)
+
+
 async def _annotate_chunk(
-    chunk: Chunk, knowledge: SeriesKnowledge, translator, chapter_id: str
+    chunk: Chunk, knowledge: SeriesKnowledge, translator, chapter_id: str,
+    chapter_number: Optional[float] = None,
 ) -> List[Segment]:
+    required_names = set()
+    if chapter_number is not None:
+        for index in chunk.indices:
+            active = knowledge.occupancy_at(
+                StoryPosition(chapter_number=chapter_number, paragraph_index=index)
+            )
+            required_names.update(active)
+            required_names.update(active.values())
     block = registry_block(
-        json.dumps(_scoped_registry(knowledge, 0), ensure_ascii=False, indent=1),
+        json.dumps(_scoped_registry(knowledge, 0, required_names), ensure_ascii=False, indent=1),
         knowledge.narration_note or "",
     )
-    user = f"{block}\n\n{format_chunk(chunk)}"
+    occupancy = _occupancy_block(knowledge, chapter_number, chunk.indices)
+    user = f"{block}\n\n{occupancy}\n\n{format_chunk(chunk)}" if occupancy else f"{block}\n\n{format_chunk(chunk)}"
 
     try:
         result: ChunkAnnotation = await translator.structured(

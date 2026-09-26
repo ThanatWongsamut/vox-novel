@@ -1079,15 +1079,34 @@ class VoxCPM2TTS(BaseTTS):
 
             # Per-character voices. Attribution assigns Paragraph.speaker, so this
             # branch, control_by_speaker and the emotion suffix are live.
-            if knowledge and p.speaker and p.speaker.strip().lower() not in ("narrator", "ผู้บรรยาย"):
-                char = knowledge.find_character(p.speaker)
-                if char:
-                    # A body holding someone else's mind speaks with the body's
-                    # voice and thinks with the occupant's, so the voice heard
-                    # is not always the character the line belongs to.
-                    voiced = knowledge.voice_for(
-                        char, p.speech_type, chapter.chapter_number
+            if knowledge:
+                speaker_name = (p.speaker or "").strip()
+                char = (
+                    knowledge.find_character(speaker_name)
+                    if p.speech_type != "narration"
+                    and speaker_name.lower() not in ("", "narrator", "ผู้บรรยาย")
+                    else None
+                )
+            else:
+                char = None
+            if knowledge and (char or p.voice_override):
+                if p.voice_override:
+                    voiced = (
+                        knowledge.find_character(p.voice_override, allow_prefix=False)
+                        if p.voice_override.lower() != "narrator" else None
                     )
+                elif char:
+                    voiced = knowledge.voice_for(
+                        char, p.speech_type, chapter.chapter_number, p.index
+                    )
+                    if voiced is None:
+                        logger.warning(
+                            "No speaking body for %s at chapter %s paragraph %s; using narrator",
+                            char.name_en, chapter.chapter_number, p.index,
+                        )
+                else:
+                    voiced = None
+                if voiced:
                     voices_dir = output_dir.parent / "voices"
                     # Use the shared helper: it strips path separators, which a
                     # bare whitespace regex does not. Character names can come

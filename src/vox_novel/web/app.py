@@ -14,9 +14,10 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from vox_novel.models.domain import Novel, Chapter, ChapterSummary, Paragraph
+from vox_novel.models.series_knowledge import StoryPosition
 from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.scrapers.readtoon import classify_speech_type
 from vox_novel.speaker.detector import score_attribution
@@ -806,6 +807,38 @@ async def synthesize_chapter_endpoint(
     return {"job_id": job_id, "status": "started"}
 
 
+def _resolved_voice_name(knowledge, chapter: Chapter, paragraph: Paragraph) -> str:
+    def label_for(character) -> str:
+        if character is None:
+            return "narrator fallback"
+        ref = Path(character.voice_ref_audio) if character.voice_ref_audio else None
+        voice_dir = storage.base_dir / chapter.book_id / "voices"
+        key = character_voice_key(character.name_en)
+        has_ref = bool(ref and ref.exists()) or any(
+            (voice_dir / f"{key}_ref{ext}").is_file()
+            and (voice_dir / f"{key}_ref{ext}").stat().st_size > 0
+            for ext in (".wav", ".mp3", ".m4a", ".flac")
+        )
+        if not character.voice_description and not has_ref:
+            return "narrator fallback (voice not designed)"
+        return character.name_en
+
+    if paragraph.voice_override:
+        if paragraph.voice_override.lower() == "narrator":
+            return "narrator (override)"
+        match = knowledge.find_character(paragraph.voice_override, allow_prefix=False)
+        return f"{label_for(match)} (override)"
+    if paragraph.speech_type == "narration" or (paragraph.speaker or "").strip().lower() in (
+        "", "narrator", "ผู้บรรยาย",
+    ):
+        return "narrator"
+    mind = knowledge.find_character(paragraph.speaker)
+    if mind is None:
+        return "narrator fallback"
+    voiced = knowledge.voice_for(mind, paragraph.speech_type, chapter.chapter_number, paragraph.index)
+    return label_for(voiced) if voiced else "review needed (narrator fallback)"
+
+
 @web_app.get("/series/{series_id}/speakers/{chapter_id}", response_class=HTMLResponse)
 async def speaker_review(request: Request, series_id: str, chapter_id: str, lang: str = "th"):
     """Review and correct who speaks each line of a chapter.
@@ -833,6 +866,10 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
         if p.speech_type in ("dialogue", "thought") and not p.speaker_verified
     )
     score = score_attribution(chapter)
+    resolved_voices = {
+        p.index: _resolved_voice_name(knowledge, chapter, p)
+        for p in chapter.paragraphs
+    }
 
     return templates.TemplateResponse(
         request=request,
@@ -847,6 +884,7 @@ async def speaker_review(request: Request, series_id: str, chapter_id: str, lang
             "verified": verified,
             "unreviewed": unreviewed,
             "score": score,
+            "resolved_voices": resolved_voices,
             "lang": lang,
         },
     )
@@ -881,6 +919,15 @@ async def update_speaker(request: Request):
     # Narration has no speaker; storing one would leave the two disagreeing.
     target.speech_type = speech_type
     target.speaker = None if speech_type == "narration" else speaker
+    if "voice_override" in body:
+        voice_override = (body.get("voice_override") or "").strip() or None
+        knowledge = knowledge_mgr.load_or_init(series_id, target_lang=chapter.target_language or "th")
+        if voice_override and voice_override.lower() != "narrator":
+            match = knowledge.find_character(voice_override, allow_prefix=False)
+            if match is None:
+                raise HTTPException(status_code=400, detail="voice override must name a registered character")
+            voice_override = match.name_en
+        target.voice_override = voice_override
     # A human corrected this line, so it is ground truth rather than a guess.
     target.speaker_verified = True
 
@@ -888,11 +935,13 @@ async def update_speaker(request: Request):
     # The review page saves without reloading, so it needs the running score
     # back or its accuracy readout goes stale the moment a correction lands.
     score = score_attribution(chapter)
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=chapter.target_language or "th")
     return {
         "status": "ok",
         "paragraph": index,
         "speaker": target.speaker,
         "detected": target.speaker_detected,
+        "voice": _resolved_voice_name(knowledge, chapter, target),
         "score": {
             "scored": score["scored"],
             "correct": score["correct"],
@@ -1019,9 +1068,12 @@ async def update_glossary_item(request: Request):
         v_ref = existing_char.voice_ref_audio if existing_char else None
         v_desc = voice_description if voice_description is not None else (existing_char.voice_description if existing_char else None)
 
-        # Remove old if name changed
+        # Preserve occupancy periods and references when a name changes.
         if old_key.strip().lower() != new_name.strip().lower():
-            knowledge.remove_character(old_key)
+            try:
+                knowledge.rename_character(old_key, new_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         knowledge.add_character(
             name_en=new_name,
             name_target=new_target,
@@ -1064,7 +1116,10 @@ async def delete_glossary_item(request: Request):
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
 
     if item_type == "character":
-        knowledge.remove_character(key)
+        try:
+            knowledge.remove_character(key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     else:
         knowledge.remove_term(key)
 
@@ -1128,11 +1183,9 @@ async def update_voice_prompt(request: Request):
 
 @web_app.post("/api/voices/inhabiting")
 async def update_inhabiting(request: Request):
-    """Record that a character wears another's body from a chapter on.
+    """Compatibility endpoint for a single open-ended chapter-boundary swap.
 
-    Edited on the mind, but read from both ends at synthesis, because the prose
-    names both: after the swap this character's spoken lines take the body's
-    voice, and lines attributed to the body are thought in this character's.
+    New clients use /api/voices/occupancy for paragraph boundaries and returns.
     """
     body = await request.json()
     series_id = safe_id(body.get("series_id"), "series_id")
@@ -1174,6 +1227,51 @@ async def update_inhabiting(request: Request):
         "inhabiting": char.inhabiting,
         "from_chapter": char.inhabiting_from_chapter,
     }
+
+
+@web_app.post("/api/voices/occupancy")
+async def update_occupancy(request: Request):
+    """Add or remove a bounded, paragraph-positioned body occupancy period."""
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    target_lang = body.get("target_lang", "th")
+    mind_name = (body.get("mind") or "").strip()
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    mind = knowledge.find_character(mind_name, allow_prefix=False)
+    if mind is None:
+        raise HTTPException(status_code=404, detail="mind must be a registered character")
+
+    if body.get("action") == "remove":
+        try:
+            index = int(body.get("index"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="index must be an integer")
+        if not knowledge.remove_occupancy(mind.name_en, index):
+            raise HTTPException(status_code=404, detail="occupancy period not found")
+    elif body.get("action") == "add":
+        if body.get("end_paragraph") not in (None, "", 1, "1") and body.get("end_chapter") in (None, ""):
+            raise HTTPException(status_code=400, detail="end paragraph needs an end chapter")
+        try:
+            start = StoryPosition(
+                chapter_number=body.get("start_chapter"),
+                paragraph_index=body.get("start_paragraph", 1),
+            )
+            end = None
+            if body.get("end_chapter") not in (None, ""):
+                end = StoryPosition(
+                    chapter_number=body.get("end_chapter"),
+                    paragraph_index=body.get("end_paragraph", 1),
+                )
+            knowledge.add_occupancy(mind.name_en, body.get("body") or "", start, end)
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        raise HTTPException(status_code=400, detail="action must be add or remove")
+
+    knowledge_mgr.save(knowledge)
+    return {"status": "ok", "intervals": [
+        item.model_dump() for item in mind.occupancy_intervals
+    ]}
 
 
 @web_app.post("/api/voices/generate")
@@ -1367,4 +1465,3 @@ async def test_api_key(request: Request):
     body = await request.json()
     api_key = body.get("api_key")
     return await verify_openrouter_api_key(api_key)
-
