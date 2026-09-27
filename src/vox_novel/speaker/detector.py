@@ -128,7 +128,11 @@ def _register_unseen(
         name = (seg.speaker or "").strip()
         if not name or name.upper() == "UNKNOWN":
             continue
-        if knowledge.find_character(name) is not None:
+        # Prefix matching only rescues a corrupted Thai name. For a clean one it
+        # would fold a new "Anna" into "Annabelle" and voice her as Annabelle
+        # for the rest of the novel.
+        allow_prefix = SeriesKnowledge.is_corrupted_name(name)
+        if knowledge.find_character(name, allow_prefix=allow_prefix) is not None:
             continue
         knowledge.add_character(name, name, notes=f"auto-registered from chapter {chapter_id}")
         stored = knowledge.find_character(name)
@@ -287,6 +291,7 @@ async def annotate_chapter(
     )
 
     disagreements: List[Dict[str, Any]] = []
+    agreed = None
     if confirm_with is not None:
         second = await _annotate_pass(
             indexed, knowledge, confirm_with, chapter.id, progress_callback,
@@ -296,6 +301,7 @@ async def annotate_chapter(
         _canonicalize(second, knowledge)
         _canonicalize(all_segments, knowledge)
         kept, disagreements = _agreement_gate(all_segments, second)
+        agreed = len(kept)
         # A disagreement is not an error to drop silently -- the paragraph still
         # needs a type, it just does not get a character voice.
         for seg in all_segments:
@@ -308,11 +314,21 @@ async def annotate_chapter(
 
     still_missing = [i for i, _ in indexed if i not in {s.paragraph for s in all_segments}]
     for index in still_missing:
+        paragraph = by_index.get(index)
+        if paragraph is None:
+            continue
+        # This run made no guess here -- usually a chunk that failed. Leaving the
+        # previous run's guess in place would have the score report it as this
+        # run's, so clear it: the line becomes unscoreable, which is the truth.
+        paragraph.speaker_detected = None
+        paragraph.speech_type_detected = None
+        if paragraph.speaker_verified:
+            continue
         # Narration is the safe default: it uses the narrator voice, which is what
         # an unattributed paragraph would have got before this feature existed.
-        paragraph = by_index.get(index)
-        if paragraph is not None and not paragraph.speech_type:
-            paragraph.speech_type = "narration"
+        # An earlier run's attribution is not kept, for the same reason.
+        paragraph.speech_type = "narration"
+        paragraph.speaker = None
 
     return {
         "annotated": applied,
@@ -323,6 +339,9 @@ async def annotate_chapter(
             if s.type != "narration" and s.confidence < 0.7
         ],
         "disagreements": disagreements,
+        # Counted separately from "annotated", which also includes the
+        # disagreements applied as narration.
+        "agreed": agreed,
     }
 
 

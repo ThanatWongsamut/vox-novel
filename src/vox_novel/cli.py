@@ -634,10 +634,13 @@ def detect_speakers_cmd(
                 console.print(f"  [{item['paragraph']}] {item['speaker']} ({item['confidence']:.2f})")
         if confirm_with:
             disagreed = result.get("disagreements", [])
-            total = result["annotated"] + len(disagreed)
-            rate = (result["annotated"] / total * 100) if total else 0
+            # Not "annotated": that also counts the disagreements, which were
+            # applied as narration, so it would double-count them.
+            agreed = result.get("agreed") or 0
+            total = agreed + len(disagreed)
+            rate = (agreed / total * 100) if total else 0
             console.print(
-                f"[cyan]Two models agreed on {result['annotated']}/{total} "
+                f"[cyan]Two models agreed on {agreed}/{total} "
                 f"paragraphs ({rate:.0f}%).[/cyan] The rest read as narration."
             )
             for d in disagreed[:10]:

@@ -228,6 +228,8 @@ class NovelPipeline:
 
         target_lang = chapter.target_language or "th"
         knowledge = self.knowledge.load_or_init(series_id, target_lang=target_lang)
+        # What the run started from, so only its own changes are written back.
+        before = knowledge.model_copy(deep=True)
 
         added = []
         if extract_registry_first or not knowledge.characters:
@@ -249,8 +251,12 @@ class NovelPipeline:
             confirm_with=confirm_with,
         )
 
-        self.knowledge.save(knowledge)
-        self.storage.save_chapter(chapter)
+        # The run takes minutes. Saving the objects it loaded would overwrite
+        # whatever was edited meanwhile -- corrections on the review page, which
+        # are the gold labels, or occupancy edited in the glossary. Apply this
+        # run's changes onto what is stored now instead.
+        knowledge = self._merge_detected_knowledge(series_id, target_lang, before, knowledge)
+        chapter = self._merge_detected_chapter(series_id, chapter)
 
         result["registry_added"] = added
         result["near_duplicates"] = knowledge.near_duplicate_characters()
@@ -258,6 +264,52 @@ class NovelPipeline:
         # run rather than the one that produced the labels.
         result["score"] = score_attribution(chapter)
         return result
+
+    # Character fields speaker detection writes. Everything else on a profile --
+    # voices, aliases, occupancy -- belongs to the human.
+    _DETECTED_CHARACTER_FIELDS = ("is_narrator", "speech_style", "line_count", "last_seen_chapter")
+
+    def _merge_detected_knowledge(self, series_id, target_lang, before, after):
+        """Write only what this run changed onto the registry as stored now."""
+        fresh = self.knowledge.load_or_init(series_id, target_lang=target_lang)
+        for key, char in after.characters.items():
+            stored = fresh.characters.get(key)
+            if stored is None:
+                # New this run: add it. Absent from the snapshot too means a
+                # human deleted it meanwhile, and that deletion stands.
+                if key not in before.characters:
+                    fresh.characters[key] = char
+                continue
+            old = before.characters.get(key)
+            for field in self._DETECTED_CHARACTER_FIELDS:
+                value = getattr(char, field)
+                if old is None or getattr(old, field) != value:
+                    setattr(stored, field, value)
+        if after.narration_note != before.narration_note:
+            fresh.narration_note = after.narration_note
+        self.knowledge.save(fresh)
+        return fresh
+
+    def _merge_detected_chapter(self, series_id, worked):
+        """Write this run's attribution onto the chapter as stored now.
+
+        The model's guess is recorded on every paragraph. The working speaker is
+        written only where no human has ruled -- checked against the stored
+        chapter, since a verdict may have landed while the run was going.
+        """
+        fresh = self.storage.get_chapter(series_id, worked.id) or worked
+        by_index = {p.index: p for p in worked.paragraphs}
+        for paragraph in fresh.paragraphs:
+            done = by_index.get(paragraph.index)
+            if done is None:
+                continue
+            paragraph.speaker_detected = done.speaker_detected
+            paragraph.speech_type_detected = done.speech_type_detected
+            if not paragraph.speaker_verified:
+                paragraph.speaker = done.speaker
+                paragraph.speech_type = done.speech_type
+        self.storage.save_chapter(fresh)
+        return fresh
 
     @staticmethod
     async def _report(progress_callback, pct: int, msg: str) -> None:

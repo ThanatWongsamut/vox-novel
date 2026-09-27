@@ -1,10 +1,23 @@
 import logging
 import re
+import unicodedata
 from datetime import datetime
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 logger = logging.getLogger(__name__)
+
+
+def _is_cjk(ch: str) -> bool:
+    """Han, kana and Hangul -- the scripts that leak into Thai model output."""
+    cp = ord(ch)
+    return (
+        0x3040 <= cp <= 0x30FF      # Hiragana, Katakana
+        or 0x3400 <= cp <= 0x4DBF   # CJK Extension A
+        or 0x4E00 <= cp <= 0x9FFF   # CJK Unified Ideographs
+        or 0xAC00 <= cp <= 0xD7AF   # Hangul syllables
+        or 0xF900 <= cp <= 0xFAFF   # CJK Compatibility Ideographs
+    )
 
 
 class TermMapping(BaseModel):
@@ -174,15 +187,29 @@ class SeriesKnowledge(BaseModel):
 
         Separators collapse to a single underscore rather than vanishing: deleting
         them made "An Na" and "Anna", or "Li Wei" and "Liwei", the same character,
-        which silently merges two people onto one voice. Characters outside Thai
-        and ASCII are dropped -- models occasionally corrupt Thai names with stray
-        CJK tokens, and those spellings should still resolve.
+        which silently merges two people onto one voice.
+
+        Every script is kept, so "Zoë" does not collapse onto "Zo" and a Hangul or
+        kanji name still has a key. The one exception is CJK inside a Thai name:
+        models occasionally corrupt Thai names with stray CJK tokens, and those
+        spellings should still resolve to the clean one.
         """
-        kept = [
-            ch for ch in name.strip().lower()
-            if ch.isascii() or "\u0e00" <= ch <= "\u0e7f"
-        ]
-        return re.sub(r"[\s\-_]+", "_", "".join(kept)).strip("_")
+        text = unicodedata.normalize("NFC", name.strip().casefold())
+        if any("\u0e00" <= ch <= "\u0e7f" for ch in text):
+            text = "".join(ch for ch in text if not _is_cjk(ch))
+        return re.sub(r"[\s\-_]+", "_", text).strip("_")
+
+    @staticmethod
+    def is_corrupted_name(name: str) -> bool:
+        """A Thai name carrying stray CJK tokens -- the model-output corruption.
+
+        Such a name is often the real one with its tail replaced, so only a
+        prefix match can recover it. A clean name gets no such licence: "Anna"
+        is a different person from "Annabelle".
+        """
+        return any("\u0e00" <= ch <= "\u0e7f" for ch in name) and any(
+            _is_cjk(ch) for ch in name
+        )
 
     @classmethod
     def _prefix_compatible(cls, a: str, b: str) -> bool:
@@ -493,7 +520,9 @@ class SeriesKnowledge(BaseModel):
         self.last_updated = datetime.utcnow()
 
     def remove_character(self, name_en: str) -> bool:
-        char = self.find_character(name_en)
+        # Never by prefix: deleting a stale or mistyped "Anna" must not take out
+        # "Annabelle" along with her voice description and reference clip.
+        char = self.find_character(name_en, allow_prefix=False)
         if not char:
             return False
         for other in self.characters.values():

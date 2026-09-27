@@ -63,16 +63,21 @@ class OpenRouterTranslator(BaseTranslator):
 
     def _get_headers(self) -> dict:
         key = self.api_key or os.getenv("OPENROUTER_API_KEY")
-        if not key:
-            raise ValueError(
-                "OPENROUTER_API_KEY is not set. Please set it in your environment or in a .env file."
-            )
-        return {
-            "Authorization": f"Bearer {key}",
+        headers = {
             "HTTP-Referer": "https://github.com/vox-novel",
             "X-Title": "VoxNovel",
             "Content-Type": "application/json",
         }
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        elif self.base_url.rstrip("/") == self.DEFAULT_BASE_URL:
+            # OpenRouter itself always needs one. A local OpenAI-compatible
+            # server such as Ollama does not, and refusing here made speaker
+            # detection against one fail on every chunk.
+            raise ValueError(
+                "OPENROUTER_API_KEY is not set. Please set it in your environment or in a .env file."
+            )
+        return headers
 
     def _build_system_prompt(self, target_lang: str, knowledge: Optional[SeriesKnowledge] = None) -> str:
         glossary_text = knowledge.format_glossary_prompt() if knowledge else ""
@@ -232,7 +237,9 @@ class OpenRouterTranslator(BaseTranslator):
                 name = c.get("name_en", "").strip()
                 if name:
                     # Check if already known via smart normalized matching or alias
-                    existing_char = existing_knowledge.find_character(name)
+                    # Not by prefix: this path saves the name as a permanent
+                    # alias, so a prefix match would merge two people for good.
+                    existing_char = existing_knowledge.find_character(name, allow_prefix=False)
                     if not existing_char:
                         new_chars.append(c)
                     elif name not in existing_char.aliases and name.lower() != existing_char.name_en.lower():
