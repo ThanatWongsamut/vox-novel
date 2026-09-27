@@ -217,5 +217,81 @@ class TestARunDoesNotOverwriteConcurrentEdits(unittest.TestCase):
         self.assertGreater(k.find_character("Annabelle").line_count, 0, "the run's counts were lost")
 
 
+class TestLineCountsDoNotPileUp(unittest.TestCase):
+    """The registry the model sees is trimmed by line count once the cast is
+    large, so a count that grows on every re-run pushes real speakers out."""
+
+    def counts(self, k):
+        return {c.name_en: c.line_count for c in k.characters.values()}
+
+    def test_rerunning_the_same_result_leaves_counts_unchanged(self):
+        chap, k = chapter(2), knowledge("Annabelle", "Rico")
+        for _ in range(3):
+            asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1), seg(2, "Rico")]))))
+        self.assertEqual(self.counts(k), {"Annabelle": 1, "Rico": 1})
+
+    def test_a_changed_attribution_moves_the_count(self):
+        chap, k = chapter(1), knowledge("Annabelle", "Rico")
+        asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1)]))))
+        asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1, "Rico")]))))
+        self.assertEqual(self.counts(k), {"Annabelle": 0, "Rico": 1})
+
+    def test_a_line_falling_back_to_narration_gives_its_count_back(self):
+        chap, k = chapter(1), knowledge("Annabelle")
+        asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1)]))))
+        asyncio.run(annotate_chapter(chap, k, Fake(RuntimeError("down"), RuntimeError("down"))))
+        self.assertEqual(self.counts(k), {"Annabelle": 0})
+
+    def test_a_verified_line_is_not_recounted(self):
+        chap, k = chapter(1), knowledge("Annabelle", "Rico")
+        asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1)]))))
+        chap.paragraphs[0].speaker_verified = True
+        asyncio.run(annotate_chapter(chap, k, Fake(ChunkAnnotation(segments=[seg(1, "Rico")]))))
+        self.assertEqual(self.counts(k), {"Annabelle": 1, "Rico": 0})
+
+
+class TestOneDefinitionOfAReferenceClip(unittest.TestCase):
+    """The review page labels a line with the voice synthesis will use. Both
+    now call find_reference_clip; these pin what it accepts."""
+
+    def setUp(self):
+        self.voices = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.voices, True)
+        self.char = knowledge("Rico").find_character("Rico")
+
+    def test_an_upload_is_found(self):
+        from vox_novel.storage.file import find_reference_clip
+        clip = self.voices / "rico_ref.mp3"
+        clip.write_bytes(b"x")
+        self.assertEqual(find_reference_clip(self.voices, self.char), clip)
+
+    def test_an_empty_upload_is_ignored(self):
+        from vox_novel.storage.file import find_reference_clip
+        (self.voices / "rico_ref.wav").write_bytes(b"")
+        self.assertIsNone(find_reference_clip(self.voices, self.char))
+
+    def test_a_generated_anchor_is_not_a_reference_clip(self):
+        # Synthesis builds anchors from the description; treating one as an
+        # upload would outrank a description edit made since.
+        from vox_novel.storage.file import find_reference_clip
+        (self.voices / "rico_ref.1a2b3c4d.wav").write_bytes(b"x")
+        self.assertIsNone(find_reference_clip(self.voices, self.char))
+
+    def test_an_explicit_path_wins(self):
+        from vox_novel.storage.file import find_reference_clip
+        (self.voices / "rico_ref.wav").write_bytes(b"x")
+        explicit = self.voices / "chosen.wav"
+        explicit.write_bytes(b"x")
+        self.char.voice_ref_audio = str(explicit)
+        self.assertEqual(find_reference_clip(self.voices, self.char), explicit)
+
+    def test_both_callers_use_it(self):
+        import inspect
+        from vox_novel.tts import voxcpm
+        from vox_novel.web import app
+        self.assertIn("find_reference_clip(", inspect.getsource(voxcpm.VoxCPM2TTS))
+        self.assertIn("find_reference_clip(", inspect.getsource(app._resolved_voice_name))
+
+
 if __name__ == "__main__":
     unittest.main()

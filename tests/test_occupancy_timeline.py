@@ -142,14 +142,14 @@ class TestOccupancyTimeline(unittest.TestCase):
             self.k.add_character(name, name)
             self.k.find_character(name).line_count = 100
         self.k.add_occupancy("A", "B", pos(10))
-        names = {entry["name"] for entry in _scoped_registry(self.k, 0, {"A", "B"})}
+        names = {entry["name"] for entry in _scoped_registry(self.k, {"A", "B"})}
         self.assertEqual(len(names), 40)
         self.assertTrue({"A", "B"}.issubset(names))
 
     def test_registry_exposes_names_used_by_the_occupancy_timeline(self):
         self.k.find_character("A").name_target = "Translated A"
         self.k.add_occupancy("A", "B", pos(10))
-        entry = next(item for item in _scoped_registry(self.k, 0) if item["canonical_name"] == "A")
+        entry = next(item for item in _scoped_registry(self.k) if item["canonical_name"] == "A")
         self.assertEqual(entry["name"], "Translated A")
         self.assertIn("A -> B", _occupancy_block(self.k, 10, [1]))
 

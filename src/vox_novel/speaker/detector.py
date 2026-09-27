@@ -31,7 +31,6 @@ EXTRACT_MAX_CHARS = 60_000
 # Characters shown to the model per call. The full registry still resolves names;
 # capping what the model sees keeps a large cast from crowding out the chapter.
 MAX_REGISTRY_SHOWN = 40
-RECENCY_WINDOW = 3
 
 CHUNK_SIZE = 25
 CONTEXT_SIZE = 4
@@ -44,11 +43,13 @@ def _paragraph_text(p: Paragraph, use_translated: bool) -> str:
 
 
 def _scoped_registry(
-    knowledge: SeriesKnowledge, chapters_seen: int,
-    required_names: Optional[set[str]] = None,
+    knowledge: SeriesKnowledge, required_names: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """The registry as the model should see it: narrator first, then recent and
-    high-volume speakers."""
+    """The registry as the model should see it.
+
+    Past MAX_REGISTRY_SHOWN characters: anyone the occupancy timeline needs for
+    this chunk, then the narrator, then by line count. Recency is not a factor.
+    """
     characters = list(knowledge.characters.values())
     if len(characters) > MAX_REGISTRY_SHOWN:
         characters.sort(
@@ -176,16 +177,34 @@ def _apply(
             # undo that, or a second run silently destroys the labels.
             continue
 
+        _retally(knowledge, paragraph.speaker, speaker, chapter_id)
         paragraph.speech_type = seg.type
         paragraph.speaker = speaker
         applied += 1
-
-        if paragraph.speaker and paragraph.speaker.upper() != "UNKNOWN":
-            character = knowledge.find_character(paragraph.speaker)
-            if character is not None:
-                character.line_count += 1
-                character.last_seen_chapter = chapter_id
     return applied
+
+
+def _retally(
+    knowledge: SeriesKnowledge, old: Optional[str], new: Optional[str], chapter_id: str
+) -> None:
+    """Move one line's count from its previous speaker to its new one.
+
+    Counting only the new speaker made every re-run add the whole chapter
+    again. The registry the model sees is trimmed by line count once the cast
+    is large, so inflated counts pushed genuinely active speakers out of it.
+    """
+    def resolve(name):
+        if not name or name.upper() == "UNKNOWN":
+            return None
+        return knowledge.find_character(name)
+
+    before, after = resolve(old), resolve(new)
+    if before is not None and before is not after:
+        before.line_count = max(0, before.line_count - 1)
+    if after is not None:
+        if after is not before:
+            after.line_count += 1
+        after.last_seen_chapter = chapter_id
 
 
 def _agreement_gate(
@@ -327,6 +346,7 @@ async def annotate_chapter(
         # Narration is the safe default: it uses the narrator voice, which is what
         # an unattributed paragraph would have got before this feature existed.
         # An earlier run's attribution is not kept, for the same reason.
+        _retally(knowledge, paragraph.speaker, None, chapter.id)
         paragraph.speech_type = "narration"
         paragraph.speaker = None
 
@@ -383,7 +403,7 @@ async def _annotate_chunk(
             required_names.update(active)
             required_names.update(active.values())
     block = registry_block(
-        json.dumps(_scoped_registry(knowledge, 0, required_names), ensure_ascii=False, indent=1),
+        json.dumps(_scoped_registry(knowledge, required_names), ensure_ascii=False, indent=1),
         knowledge.narration_note or "",
     )
     occupancy = _occupancy_block(knowledge, chapter_number, chunk.indices)

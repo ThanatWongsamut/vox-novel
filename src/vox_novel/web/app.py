@@ -25,6 +25,7 @@ from vox_novel.storage.file import (
     StorageManager,
     UnsafePathSegment,
     character_voice_key,
+    find_reference_clip,
     validate_path_segment,
 )
 from vox_novel.storage.knowledge import KnowledgeManager
@@ -811,14 +812,8 @@ def _resolved_voice_name(knowledge, chapter: Chapter, paragraph: Paragraph) -> s
     def label_for(character) -> str:
         if character is None:
             return "narrator fallback"
-        ref = Path(character.voice_ref_audio) if character.voice_ref_audio else None
-        voice_dir = storage.base_dir / chapter.book_id / "voices"
-        key = character_voice_key(character.name_en)
-        has_ref = bool(ref and ref.exists()) or any(
-            (voice_dir / f"{key}_ref{ext}").is_file()
-            and (voice_dir / f"{key}_ref{ext}").stat().st_size > 0
-            for ext in (".wav", ".mp3", ".m4a", ".flac")
-        )
+        # The same lookup synthesis uses, so this label cannot drift from it.
+        has_ref = find_reference_clip(storage.base_dir / chapter.book_id / "voices", character)
         if not character.voice_description and not has_ref:
             return "narrator fallback (voice not designed)"
         return character.name_en

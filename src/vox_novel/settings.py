@@ -72,12 +72,13 @@ def save_app_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         updates["OPENROUTER_MODEL"] = new_model
         os.environ["OPENROUTER_MODEL"] = new_model
 
-    # Empty is meaningful here: it means "use the draft model for polish too".
+    # Empty is meaningful here: it means "use openrouter.ai".
     if "openrouter_base_url" in data:
         new_base = (data.get("openrouter_base_url") or "").strip()
         updates["OPENROUTER_BASE_URL"] = new_base
         os.environ["OPENROUTER_BASE_URL"] = new_base
 
+    # Empty is meaningful here: it means "use the draft model for polish too".
     if "openrouter_polish_model" in data:
         new_polish = (data.get("openrouter_polish_model") or "").strip()
         updates["OPENROUTER_POLISH_MODEL"] = new_polish

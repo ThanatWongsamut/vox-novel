@@ -13,7 +13,7 @@ import httpx
 import numpy as np
 import soundfile as sf
 from vox_novel.models.domain import Chapter, Paragraph
-from vox_novel.storage.file import character_voice_key
+from vox_novel.storage.file import character_voice_key, find_reference_clip
 from vox_novel.tts.base import BaseTTS
 
 logger = logging.getLogger(__name__)
@@ -1114,16 +1114,9 @@ class VoxCPM2TTS(BaseTTS):
                     safe_k = character_voice_key(voiced.name_en)
 
                     # An uploaded clip outranks anything generated from a
-                    # description, here and in the Voice Studio.
-                    char_ref = None
-                    if voiced.voice_ref_audio and Path(voiced.voice_ref_audio).exists():
-                        char_ref = Path(voiced.voice_ref_audio)
-                    else:
-                        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
-                            cand = voices_dir / f"{safe_k}_ref{ext}"
-                            if cand.exists() and cand.stat().st_size > 0:
-                                char_ref = cand
-                                break
+                    # description, here and in the Voice Studio. Shared with the
+                    # review page so the voice it shows is the one used here.
+                    char_ref = find_reference_clip(voices_dir, voiced)
 
                     if voiced.voice_description:
                         para_voice_desc = voiced.voice_description

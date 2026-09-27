@@ -62,6 +62,30 @@ def get_chapter_file_prefix(chapter: Chapter) -> str:
     return f"{num_str} - {safe_title}"
 
 
+REFERENCE_CLIP_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac")
+
+
+def find_reference_clip(voices_dir: Path, character) -> Optional[Path]:
+    """The clip synthesis will clone this character's voice from, if one exists.
+
+    An explicit `voice_ref_audio` wins, then an upload named `<key>_ref.<ext>`.
+    Generated anchors are not returned: synthesis builds those from the voice
+    description when no clip exists. This is the single definition both the TTS
+    engine and the speaker review page use, so the voice the page shows is the
+    voice synthesis picks.
+    """
+    if character.voice_ref_audio:
+        explicit = Path(character.voice_ref_audio)
+        if explicit.exists():
+            return explicit
+    key = character_voice_key(character.name_en)
+    for ext in REFERENCE_CLIP_EXTENSIONS:
+        candidate = voices_dir / f"{key}_ref{ext}"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
 class StorageManager:
     """Manages saving and loading Novel/Chapter data, local cover caching, and translation status."""
 
