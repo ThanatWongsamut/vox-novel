@@ -207,17 +207,43 @@ class StorageManager:
         found += list(voices_dir.glob("narrator_ref.*.wav"))
         return [f for f in dict.fromkeys(found) if f.is_file() and ".partial." not in f.name]
 
+    def _character_anchors(self, voices_dir: Path, safe_key: str) -> List[Path]:
+        """Generated anchors for exactly this character: `<key>_ref.<sha8>.wav`.
+
+        Matched by exact shape rather than by substring. A substring match let
+        "anna" pick up `annabelle_ref.wav`, so the glossary played -- and reset
+        deleted -- another character's voice.
+        """
+        pattern = re.compile(rf"^{re.escape(safe_key)}_ref\.[0-9a-f]{{8}}\.wav$")
+        return [
+            f for f in voices_dir.glob(f"{safe_key}_ref.*.wav")
+            if pattern.match(f.name) and f.is_file() and f.stat().st_size > 0
+        ]
+
     def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
+        """The clip the glossary should play for a character.
+
+        Same rule as the narrator: an upload, `<key>_ref.<ext>`, wins; otherwise
+        the most recent anchor synthesis generated from the voice description.
+        """
         voices_dir = self.get_voices_dir(series_id)
         safe_key = character_voice_key(character_name)
-        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+        for ext in REFERENCE_CLIP_EXTENSIONS:
             p = voices_dir / f"{safe_key}_ref{ext}"
-            if p.exists() and p.stat().st_size > 0:
+            if p.is_file() and p.stat().st_size > 0:
                 return p
-        for f in voices_dir.glob(f"*{safe_key}*"):
-            if f.is_file() and f.stat().st_size > 0 and f.suffix.lower() in [".wav", ".mp3", ".m4a", ".flac"]:
-                return f
+        anchors = self._character_anchors(voices_dir, safe_key)
+        if anchors:
+            return max(anchors, key=lambda f: f.stat().st_mtime)
         return None
+
+    def _character_voice_files(self, series_id: str, character_name: str) -> List[Path]:
+        """Every clip for one character, uploads and generated anchors alike."""
+        voices_dir = self.get_voices_dir(series_id)
+        safe_key = character_voice_key(character_name)
+        found = [voices_dir / f"{safe_key}_ref{ext}" for ext in REFERENCE_CLIP_EXTENSIONS]
+        found += self._character_anchors(voices_dir, safe_key)
+        return [f for f in dict.fromkeys(found) if f.is_file()]
 
     def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
         voices_dir = self.get_voices_dir(series_id)
@@ -231,10 +257,13 @@ class StorageManager:
                 removed = True
             return removed
         elif character_name:
-            target = self.get_character_voice_file(series_id, character_name)
-            if target and target.exists():
-                target.unlink()
-                return True
+            # Every clip, as for the narrator: removing only the newest would let
+            # an older anchor come back as "current" straight away.
+            removed = False
+            for target in self._character_voice_files(series_id, character_name):
+                target.unlink(missing_ok=True)
+                removed = True
+            return removed
         return False
 
     def get_chapter(self, series_id: str, chapter_id: str) -> Optional[Chapter]:

@@ -293,5 +293,61 @@ class TestOneDefinitionOfAReferenceClip(unittest.TestCase):
         self.assertIn("find_reference_clip(", inspect.getsource(app._resolved_voice_name))
 
 
+class TestTheGlossaryFindsOnlyThisCharactersClip(unittest.TestCase):
+    """get_character_voice_file used to accept any file whose name contained
+    the character's key, so the glossary played, and reset deleted, another
+    character's voice."""
+
+    def setUp(self):
+        from vox_novel.storage.file import StorageManager, character_voice_key
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.storage = StorageManager(base_dir=self.tmp)
+        self.voices = self.storage.get_voices_dir("s")
+        self.key = character_voice_key
+
+    def put(self, name, data=b"x"):
+        path = self.voices / name
+        path.write_bytes(data)
+        return path
+
+    def test_a_longer_names_clip_is_not_this_characters(self):
+        self.put(f"{self.key('Annabelle')}_ref.wav")
+        self.assertIsNone(self.storage.get_character_voice_file("s", "Anna"))
+
+    def test_a_generated_anchor_is_played_when_there_is_no_upload(self):
+        anchor = self.put(f"{self.key('Anna')}_ref.1a2b3c4d.wav")
+        self.assertEqual(self.storage.get_character_voice_file("s", "Anna"), anchor)
+
+    def test_an_upload_outranks_an_anchor(self):
+        self.put(f"{self.key('Anna')}_ref.1a2b3c4d.wav")
+        upload = self.put(f"{self.key('Anna')}_ref.mp3")
+        self.assertEqual(self.storage.get_character_voice_file("s", "Anna"), upload)
+
+    def test_a_half_written_anchor_is_never_offered(self):
+        self.put(f"{self.key('Anna')}_ref.1a2b3c4d.abc123.partial.wav")
+        self.assertIsNone(self.storage.get_character_voice_file("s", "Anna"))
+
+    def test_the_newest_anchor_is_current(self):
+        import time
+        old = self.put(f"{self.key('Anna')}_ref.00000000.wav")
+        new = self.put(f"{self.key('Anna')}_ref.ffffffff.wav")
+        os.utime(old, (time.time() - 60, time.time() - 60))
+        self.assertEqual(self.storage.get_character_voice_file("s", "Anna"), new)
+
+    def test_reset_removes_every_clip_and_nobody_elses(self):
+        mine = [
+            self.put(f"{self.key('Anna')}_ref.wav"),
+            self.put(f"{self.key('Anna')}_ref.00000000.wav"),
+            self.put(f"{self.key('Anna')}_ref.ffffffff.wav"),
+        ]
+        theirs = self.put(f"{self.key('Annabelle')}_ref.wav")
+        self.assertTrue(self.storage.delete_voice_file("s", "character", "Anna"))
+        self.assertFalse(any(p.exists() for p in mine), "an older anchor would come back as current")
+        self.assertTrue(theirs.exists(), "reset deleted another character's voice")
+        self.assertIsNone(self.storage.get_character_voice_file("s", "Anna"))
+
+
 if __name__ == "__main__":
     unittest.main()
