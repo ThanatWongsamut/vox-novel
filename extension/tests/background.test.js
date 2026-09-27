@@ -38,6 +38,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
   const tabs = new Map();
   let nextTab = 1;
   const imports = [];
+  const planQueries = [];
   const opened = [];
   const focused = [];
 
@@ -124,6 +125,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
   async function fetch(url, init = {}) {
     const u = new URL(url);
     if (u.pathname === "/api/extension/plan") {
+      planQueries.push(Object.fromEntries(u.searchParams));
       return { ok: true, status: 200, json: async () => structuredClone(plan) };
     }
     if (u.pathname === "/api/extension/import") {
@@ -180,7 +182,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
     load(tab, url);
   }
 
-  return { send, job, until, imports, opened, focused, pages, reload, store };
+  return { send, job, until, imports, opened, focused, pages, reload, store, planQueries };
 }
 
 function planFor(...nos) {
@@ -206,6 +208,19 @@ test("a single chapter is a job of one", async () => {
   await b.send("start", { seriesId: "s", from: 7, to: 7 });
   await b.until("done");
   assert.deepEqual(b.imports, [7]);
+});
+
+test("a re-fetch asks for chapters already imported; a normal job does not", async () => {
+  const b = makeBrowser({ plan: planFor(5) });
+  await b.send("start", { seriesId: "s", from: 5, to: 5, includeImported: true });
+  await b.until("done");
+  assert.equal(b.planQueries[0].include_imported, "true");
+  assert.deepEqual(b.imports, [5]);
+
+  const normal = makeBrowser({ plan: planFor(5) });
+  await normal.send("start", { seriesId: "s", from: 5, to: 5 });
+  await normal.until("done");
+  assert.equal(normal.planQueries[0].include_imported, undefined);
 });
 
 test("an unowned paid chapter pauses, brings the tab forward, and can be skipped", async () => {

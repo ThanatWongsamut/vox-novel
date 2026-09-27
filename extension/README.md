@@ -31,9 +31,13 @@ Open an unlocked chapter on ReadToon and click the floating
 ## A batch
 
 From VoxNovel's series page, **Import missing chapters** -- optionally with a
-chapter range; a range of one chapter imports just that one. Each chapter row
-also gets an **Import** button. The same is in the extension popup on any
-ReadToon series or chapter page.
+chapter range; a range of one chapter imports just that one. The same is in the
+extension popup on any ReadToon series or chapter page.
+
+Every ReadToon fetch on the series page -- **Fetch Chapter**, **Re-Fetch**,
+**Fetch Next** -- goes through the extension when it is installed, and through
+VoxNovel's own headless browser otherwise. Re-fetching keeps the speaker labels
+on every paragraph whose text is unchanged, including ones you verified.
 
 The extension asks VoxNovel which chapters are missing, then loads each one in
 a single background tab, waits for the text, imports it, and moves on after 3

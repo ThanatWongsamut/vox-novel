@@ -300,8 +300,13 @@ async def extension_plan(
     start: Optional[float] = Query(None, alias="from"),
     end: Optional[float] = Query(None, alias="to"),
     refresh: bool = False,
+    include_imported: bool = False,
 ):
     """The chapters a batch import should load: in range and not yet stored.
+
+    With include_imported, chapters already stored are planned too -- a
+    re-fetch. Speaker labels on them survive: the import carries them over
+    wherever a paragraph's text is unchanged.
 
     The server can read ReadToon's chapter list without a browser -- it is the
     chapter text that needs one -- so the plan is made here and the extension
@@ -343,13 +348,15 @@ async def extension_plan(
         in_range += 1
         if ch.id in imported:
             already += 1
-            continue
+            if not include_imported:
+                continue
         if not READTOON_CHAPTER_URL.match(ch.url or ""):
             logger.warning("Skipping chapter %s of %s: unexpected URL %r", ch.id, series_id, ch.url)
             continue
         chapters.append({
             "no": number, "id": ch.id, "url": ch.url,
             "title": ch.title, "is_locked": ch.is_locked,
+            "imported": ch.id in imported,
         })
 
     return {
@@ -467,6 +474,11 @@ async def extension_import(req: ExtensionImportRequest):
         metadata={"source": req.source},
     )
 
+    # A re-import must not throw away speaker labels made since, above all the
+    # ones a human verified.
+    previous = await asyncio.to_thread(storage.get_chapter, series_id, chap_id)
+    attribution_kept = chapter.inherit_attribution(previous)
+
     await asyncio.to_thread(storage.save_chapter, chapter, True)
 
     # Update or create Novel
@@ -522,6 +534,7 @@ async def extension_import(req: ExtensionImportRequest):
         "read_url": f"/series/{series_id}/read/{chapter.id}",
         "series_url": f"/series/{series_id}",
         "paragraph_count": len(para_objs),
+        "attribution_kept": attribution_kept,
     }
 
 

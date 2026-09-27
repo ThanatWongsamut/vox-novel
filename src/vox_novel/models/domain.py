@@ -3,6 +3,15 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# Per-paragraph work done after a chapter is fetched: attribution, a human's
+# verdict on it, and voice choices. None of it can be fetched again, so a
+# re-fetch carries it over -- see Chapter.inherit_attribution.
+INHERITED_PARAGRAPH_FIELDS = (
+    "speaker", "speech_type", "speaker_verified", "speaker_detected",
+    "speech_type_detected", "voice_override", "emotion",
+)
+
+
 class Paragraph(BaseModel):
     id: Optional[str] = None
     index: int
@@ -51,6 +60,41 @@ class Chapter(BaseModel):
         return "\n\n".join(
             p.translated_text or p.text for p in self.paragraphs if (p.translated_text or p.text).strip()
         )
+
+    def inherit_attribution(self, previous: Optional["Chapter"]) -> int:
+        """Keep a previous copy's attribution on paragraphs whose text is unchanged.
+
+        Fetching a chapter again builds it from scratch, which used to discard
+        every speaker label on it -- including the ones a human verified, which
+        are the only gold labels speaker detection is scored against.
+
+        Paragraphs are matched by their text, not their position, so a line
+        added or removed upstream shifts nothing after it. A paragraph whose text
+        changed keeps nothing: a label is only known to be right for the words it
+        was made on. Repeated lines pair up in order. Returns how many paragraphs
+        kept their attribution.
+        """
+        if previous is None:
+            return 0
+
+        def key(p: "Paragraph") -> str:
+            # Detection and review both work on the text as it will be read.
+            return (p.translated_text or p.text or "").strip()
+
+        unused: Dict[str, List["Paragraph"]] = {}
+        for old in previous.paragraphs:
+            unused.setdefault(key(old), []).append(old)
+
+        kept = 0
+        for new in self.paragraphs:
+            candidates = unused.get(key(new))
+            if not candidates:
+                continue
+            old = candidates.pop(0)
+            for field in INHERITED_PARAGRAPH_FIELDS:
+                setattr(new, field, getattr(old, field))
+            kept += 1
+        return kept
 
 
 class ChapterSummary(BaseModel):

@@ -92,6 +92,13 @@ class TestPlan(PlanTestCase):
         self.store(novel(summary(1), source="webnovel"))
         self.assertEqual(self.plan().status_code, 400)
 
+    def test_a_refetch_plans_imported_chapters_too(self):
+        self.store(novel(summary(1), summary(2)))
+        self.import_chapter(1)
+        body = self.plan(include_imported="true").json()
+        self.assertEqual([(c["no"], c["imported"]) for c in body["chapters"]], [(1.0, True), (2.0, False)])
+        self.assertEqual([c["no"] for c in self.plan().json()["chapters"]], [2.0], "default changed")
+
 
 class TestCatalogRefresh(PlanTestCase):
     def test_an_unknown_series_fetches_its_catalog(self):
@@ -132,17 +139,34 @@ class TestSeriesPage(PlanTestCase):
         self.assertEqual(res.status_code, 200, res.text)
         return res.text
 
-    def test_a_readtoon_series_gets_the_panel_and_row_buttons(self):
+    def test_a_readtoon_series_gets_the_panel(self):
         self.store(novel(summary(1), summary(2, locked=True)))
-        self.import_chapter(1)
         html = self.page()
         self.assertIn('id="vox-batch"', html)
         self.assertIn('const SERIES_ID = "s";', html)
-        # One-chapter import only for the chapter not yet imported.
-        self.assertEqual(html.count("voxBatch.startOne("), 1)
-        self.assertIn("voxBatch.startOne(2.0)", html)
         # The old manual route stays for browsers without the extension.
         self.assertIn('class="vox-no-ext', html)
+
+    def test_every_readtoon_fetch_goes_through_one_function(self):
+        # Fetch Chapter, Re-Fetch and Fetch Next all route through the extension
+        # when it is installed, and the server otherwise.
+        self.store(novel(summary(1), summary(2)))
+        self.import_chapter(1)
+        html = self.page()
+        self.assertNotIn("startTranslation('s'", html, "a ReadToon fetch bypasses the router")
+        self.assertEqual(html.count('onclick="fetchReadtoonChapter(this)"'), 3)  # 2 rows + Fetch Next
+        self.assertIn('data-no="1.0"', html)
+        self.assertIn('data-imported="true"', html)
+        self.assertIn('data-imported="false"', html)
+
+    def test_a_title_with_quotes_cannot_break_out_of_the_button(self):
+        self.store(novel(ChapterSummary(
+            id="1", book_id="s", chapter_number=1.0, url="https://readtoon.com/content/s/1",
+            title='ตอนที่ 1 "x" onmouseover="alert(1)',
+        )))
+        html = self.page()
+        self.assertNotIn('onmouseover="alert(1)', html)
+        self.assertIn("&#34;x&#34; onmouseover=&#34;alert(1)", html)
 
     def test_other_sources_do_not(self):
         self.store(novel(summary(1), source="webnovel"))

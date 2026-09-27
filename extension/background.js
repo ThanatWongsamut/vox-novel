@@ -185,10 +185,13 @@ async function postImport(details) {
   return response.status >= 500 ? { type: "server", detail } : { type: "empty", detail };
 }
 
-async function fetchPlan({ seriesId, from, to }) {
+async function fetchPlan({ seriesId, from, to, includeImported }) {
   const params = new URLSearchParams({ series_id: seriesId });
   if (from != null) params.set("from", String(from));
   if (to != null) params.set("to", String(to));
+  // A re-fetch: chapters already in VoxNovel are loaded again. Their speaker
+  // labels survive, since the server carries them over by paragraph text.
+  if (includeImported) params.set("include_imported", "true");
   let response;
   try {
     response = await fetch(`${await getServerUrl()}/api/extension/plan?${params}`);
@@ -281,7 +284,11 @@ async function handle(command, payload) {
       }
       const seriesId = String((payload && payload.seriesId) || "");
       if (!/^[A-Za-z0-9._-]+$/.test(seriesId)) throw new Error("A series id is required.");
-      const plan = await fetchPlan({ seriesId, ...readRange(payload || {}) });
+      const plan = await fetchPlan({
+        seriesId,
+        ...readRange(payload || {}),
+        includeImported: !!(payload && payload.includeImported),
+      });
       const problem = C.validatePlan(plan);
       if (problem) throw new Error(problem);
 
