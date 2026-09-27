@@ -33,12 +33,15 @@ models burn output tokens invisibly; get real cost from
 
 ```bash
 uv run python -m unittest discover -s tests   # full suite, hermetic, <1s
+node --test extension/tests/                  # extension: job logic and driver, no browser
 uv run vox-novel web                          # web UI on :8000
 uv run vox-novel ui                           # interactive CLI
 uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
 ```
 
 `pytest` is not installed; the suite is `unittest`.
+The extension's tests use Node's built-in runner (Node 20+), with no
+dependencies: `background.js` runs against a stand-in for the `chrome.*` APIs.
 
 ## Layout
 
@@ -50,7 +53,7 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
 | `pipeline/manager.py` | Orchestrates scrape → translate → polish → synthesize |
 | `storage/` | Filesystem persistence under `output/<series_id>/` |
 | `web/` | FastAPI app and Jinja templates |
-| `extension/` | Manifest V3 Chrome importer for ReadToon |
+| `extension/` | Manifest V3 Chrome importer for ReadToon: one chapter, or a batch job driven through the user's own browser |
 
 ## Conventions
 

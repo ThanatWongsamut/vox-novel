@@ -200,6 +200,85 @@
       padding: 4px 10px;
       cursor: pointer;
     }
+    .batch-card {
+      margin-top: 12px;
+    }
+    .batch-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 8px 0;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .batch-row input {
+      width: 64px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 6px;
+      color: #e2e8f0;
+      padding: 4px 6px;
+      font-size: 11px;
+    }
+    .batch-hint {
+      font-size: 10px;
+      color: #64748b;
+      line-height: 1.4;
+    }
+    .batch-progress {
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .batch-bar {
+      height: 6px;
+      background: rgba(71, 85, 105, 0.5);
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 6px 0;
+    }
+    .batch-bar > div {
+      height: 100%;
+      background: linear-gradient(90deg, #6366f1, #a855f7);
+      transition: width 0.3s;
+    }
+    .batch-pause {
+      margin: 6px 0;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: #fcd34d;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .batch-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .batch-actions button {
+      flex: 1;
+      padding: 6px 4px;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(51, 65, 85, 0.6);
+      color: #e2e8f0;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .batch-actions button.primary {
+      background: #6366f1;
+      border-color: #6366f1;
+      color: #fff;
+    }
+    .batch-error {
+      color: #f87171;
+      font-size: 11px;
+      margin-top: 6px;
+    }
+    [hidden] {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -230,6 +309,38 @@
     </button>
   </div>
 
+  <div class="card batch-card" id="batch-card" hidden>
+    <div class="card-title">Batch Import</div>
+
+    <div id="batch-start">
+      <div class="batch-row">
+        <span>Chapters</span>
+        <input type="number" id="batch-from" min="0" step="any" placeholder="first">
+        <span>to</span>
+        <input type="number" id="batch-to" min="0" step="any" placeholder="last">
+      </div>
+      <p class="batch-hint">Leave blank for every chapter not yet in VoxNovel. Runs in a background
+        tab of this browser; it stops and asks you whenever ReadToon needs you.</p>
+      <div class="batch-actions">
+        <button id="batch-start-btn" class="primary">Import missing chapters</button>
+      </div>
+    </div>
+
+    <div id="batch-running" hidden>
+      <div class="batch-progress" id="batch-status"></div>
+      <div class="batch-bar"><div id="batch-bar-fill" style="width: 0%"></div></div>
+      <div class="batch-pause" id="batch-pause" hidden></div>
+      <div class="batch-actions">
+        <button id="batch-pause-btn">Pause</button>
+        <button id="batch-resume-btn" class="primary" hidden>Continue</button>
+        <button id="batch-skip-btn" hidden>Skip chapter</button>
+        <button id="batch-cancel-btn">Cancel</button>
+      </div>
+    </div>
+
+    <div class="batch-error" id="batch-error" hidden></div>
+  </div>
+
   <div style="margin-top: 12px;">
     <a href="http://127.0.0.1:8000" target="_blank" class="btn-secondary">
       <span>Open VoxNovel Web UI ↗</span>
@@ -244,6 +355,7 @@
     </div>
   </div>
 
+  <script src="lib/core.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
