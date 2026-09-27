@@ -14,15 +14,18 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from vox_novel.models.domain import Novel, Chapter, ChapterSummary, Paragraph
+from vox_novel.models.series_knowledge import StoryPosition
 from vox_novel.pipeline.manager import NovelPipeline
 from vox_novel.scrapers.readtoon import classify_speech_type
+from vox_novel.speaker.detector import score_attribution
 from vox_novel.storage.file import (
     StorageManager,
     UnsafePathSegment,
     character_voice_key,
+    find_reference_clip,
     validate_path_segment,
 )
 from vox_novel.storage.knowledge import KnowledgeManager
@@ -197,10 +200,20 @@ async def get_narrator_voice(series_id: str):
 
 
 @web_app.api_route("/api/voices/{series_id}/character/{character_name}", methods=["GET", "HEAD"])
-async def get_character_voice(series_id: str, character_name: str):
+async def get_character_voice(series_id: str, character_name: str, lang: str = "th"):
     """Serve character-specific reference voice anchor."""
     series_id = safe_id(series_id, "series_id")
-    p = storage.get_character_voice_file(series_id, character_name)
+    lang = safe_id(lang, "lang")
+    if not (knowledge_mgr.base_dir / series_id / f"knowledge_{lang}.json").is_file():
+        raise HTTPException(status_code=404, detail="Series knowledge not found")
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    character = knowledge.find_character(character_name, allow_prefix=False)
+    if character is None:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+    p = storage.get_character_voice_file(
+        series_id, character.name_en, character.voice_control_prompt,
+        require_current=True,
+    )
     if not p or not p.exists():
         raise HTTPException(status_code=404, detail=f"Voice not found for character '{character_name}'")
     media_type = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
@@ -805,6 +818,193 @@ async def synthesize_chapter_endpoint(
     return {"job_id": job_id, "status": "started"}
 
 
+def _resolved_voice_name(knowledge, chapter: Chapter, paragraph: Paragraph) -> str:
+    def label_for(character) -> str:
+        if character is None:
+            return "narrator fallback"
+        # The same lookup synthesis uses, so this label cannot drift from it.
+        has_ref = find_reference_clip(storage.base_dir / chapter.book_id / "voices", character)
+        if not character.voice_description and not has_ref:
+            return "narrator fallback (voice not designed)"
+        return character.name_en
+
+    if paragraph.voice_override:
+        if paragraph.voice_override.lower() == "narrator":
+            return "narrator (override)"
+        match = knowledge.find_character(paragraph.voice_override, allow_prefix=False)
+        return f"{label_for(match)} (override)"
+    if paragraph.speech_type == "narration" or (paragraph.speaker or "").strip().lower() in (
+        "", "narrator", "ผู้บรรยาย",
+    ):
+        return "narrator"
+    mind = knowledge.find_character(paragraph.speaker)
+    if mind is None:
+        return "narrator fallback"
+    voiced = knowledge.voice_for(mind, paragraph.speech_type, chapter.chapter_number, paragraph.index)
+    return label_for(voiced) if voiced else "review needed (narrator fallback)"
+
+
+@web_app.get("/series/{series_id}/speakers/{chapter_id}", response_class=HTMLResponse)
+async def speaker_review(request: Request, series_id: str, chapter_id: str, lang: str = "th"):
+    """Review and correct who speaks each line of a chapter.
+
+    Attribution is not reliable enough to run unattended, so this is where a
+    human fixes it. Correcting a line here is also how a gold set gets built:
+    the corrections are the labels.
+    """
+    series_id = safe_id(series_id, "series_id")
+    chapter_id = safe_id(chapter_id, "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    # A stored override may name a character since renamed; the old name is an
+    # alias, so it still resolves at synthesis. Show it under the current name,
+    # or the dropdown selects nothing and reads as "auto". Display only.
+    for p in chapter.paragraphs:
+        if p.voice_override and p.voice_override.lower() != "narrator":
+            match = knowledge.find_character(p.voice_override, allow_prefix=False)
+            if match is not None:
+                p.voice_override = match.name_en
+    characters = sorted(
+        knowledge.characters.values(), key=lambda c: (not c.is_narrator, c.name_en.lower())
+    )
+    attributed = sum(1 for p in chapter.paragraphs if p.speaker)
+    spoken = sum(1 for p in chapter.paragraphs if p.speech_type in ("dialogue", "thought"))
+    verified = sum(1 for p in chapter.paragraphs if p.speaker_verified)
+    unreviewed = sum(
+        1 for p in chapter.paragraphs
+        if p.speech_type in ("dialogue", "thought") and not p.speaker_verified
+    )
+    score = score_attribution(chapter)
+    resolved_voices = {
+        p.index: _resolved_voice_name(knowledge, chapter, p)
+        for p in chapter.paragraphs
+    }
+
+    return templates.TemplateResponse(
+        request=request,
+        name="speakers.html",
+        context={
+            "chapter": chapter,
+            "characters": characters,
+            "narration_note": knowledge.narration_note or "",
+            "near_duplicates": knowledge.near_duplicate_characters(),
+            "attributed": attributed,
+            "spoken": spoken,
+            "verified": verified,
+            "unreviewed": unreviewed,
+            "score": score,
+            "resolved_voices": resolved_voices,
+            "lang": lang,
+        },
+    )
+
+
+@web_app.post("/api/speakers/update")
+async def update_speaker(request: Request):
+    """Correct one paragraph's speaker or type."""
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+    try:
+        index = int(body.get("paragraph"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="paragraph must be an integer")
+
+    speech_type = body.get("speech_type")
+    if speech_type not in ("dialogue", "thought", "narration"):
+        raise HTTPException(
+            status_code=400, detail="speech_type must be dialogue, thought or narration"
+        )
+    speaker = (body.get("speaker") or "").strip() or None
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    target = next((p for p in chapter.paragraphs if p.index == index), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Paragraph {index} not found")
+
+    # Narration has no speaker; storing one would leave the two disagreeing.
+    target.speech_type = speech_type
+    target.speaker = None if speech_type == "narration" else speaker
+    if "voice_override" in body:
+        voice_override = (body.get("voice_override") or "").strip() or None
+        knowledge = knowledge_mgr.load_or_init(series_id, target_lang=chapter.target_language or "th")
+        if voice_override and voice_override.lower() != "narrator":
+            match = knowledge.find_character(voice_override, allow_prefix=False)
+            if match is None:
+                raise HTTPException(status_code=400, detail="voice override must name a registered character")
+            voice_override = match.name_en
+        target.voice_override = voice_override
+    # A human corrected this line, so it is ground truth rather than a guess.
+    target.speaker_verified = True
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    # The review page saves without reloading, so it needs the running score
+    # back or its accuracy readout goes stale the moment a correction lands.
+    score = score_attribution(chapter)
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=chapter.target_language or "th")
+    return {
+        "status": "ok",
+        "paragraph": index,
+        "speaker": target.speaker,
+        "detected": target.speaker_detected,
+        "voice": _resolved_voice_name(knowledge, chapter, target),
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
+
+
+@web_app.post("/api/speakers/verify-rest")
+async def verify_remaining_speakers(request: Request):
+    """Mark every unreviewed spoken line in a chapter as correct as detected.
+
+    A read-through only produces labels for the lines a reviewer *changed* --
+    the ones detection got right are never touched, so a chapter read end to end
+    scores on a handful of paragraphs, all of them errors. This is the other
+    half of the verdict: everything left is correct.
+
+    Only offered as a bulk action after reading the chapter, and it never
+    overwrites an existing verdict.
+    """
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    chapter_id = safe_id(body.get("chapter_id"), "chapter_id")
+
+    chapter = storage.get_chapter(series_id, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    confirmed = []
+    for p in chapter.paragraphs:
+        if p.speaker_verified or p.speech_type not in ("dialogue", "thought"):
+            continue
+        p.speaker_verified = True
+        confirmed.append(p.index)
+
+    await asyncio.to_thread(storage.save_chapter, chapter, True)
+    score = score_attribution(chapter)
+    return {
+        "status": "ok",
+        "confirmed": len(confirmed),
+        "score": {
+            "scored": score["scored"],
+            "correct": score["correct"],
+            "wrong": score["wrong"],
+            "accuracy": score["accuracy"],
+        },
+    }
+
+
 @web_app.get("/series/{series_id}/glossary", response_class=HTMLResponse)
 async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     series_id = safe_id(series_id, "series_id")
@@ -815,7 +1015,9 @@ async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     # Map character voice status for template rendering
     char_voice_status = {}
     for key, char in knowledge.characters.items():
-        c_file = storage.get_character_voice_file(series_id, char.name_en)
+        c_file = storage.get_character_voice_file(
+            series_id, char.name_en, char.voice_control_prompt, require_current=True,
+        )
         char_voice_status[key] = {
             "has_ref": c_file is not None and c_file.exists(),
             "has_desc": bool(char.voice_description),
@@ -881,9 +1083,12 @@ async def update_glossary_item(request: Request):
         v_ref = existing_char.voice_ref_audio if existing_char else None
         v_desc = voice_description if voice_description is not None else (existing_char.voice_description if existing_char else None)
 
-        # Remove old if name changed
+        # Preserve occupancy periods and references when a name changes.
         if old_key.strip().lower() != new_name.strip().lower():
-            knowledge.remove_character(old_key)
+            try:
+                knowledge.rename_character(old_key, new_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         knowledge.add_character(
             name_en=new_name,
             name_target=new_target,
@@ -926,7 +1131,10 @@ async def delete_glossary_item(request: Request):
     knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
 
     if item_type == "character":
-        knowledge.remove_character(key)
+        try:
+            knowledge.remove_character(key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     else:
         knowledge.remove_term(key)
 
@@ -988,6 +1196,99 @@ async def update_voice_prompt(request: Request):
     }
 
 
+@web_app.post("/api/voices/inhabiting")
+async def update_inhabiting(request: Request):
+    """Compatibility endpoint for a single open-ended chapter-boundary swap.
+
+    New clients use /api/voices/occupancy for paragraph boundaries and returns.
+    """
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    target_lang = body.get("target_lang", "th")
+    character_name = (body.get("character_name") or "").strip()
+    inhabiting = (body.get("inhabiting") or "").strip()
+    from_chapter = body.get("from_chapter")
+
+    if not character_name:
+        raise HTTPException(status_code=400, detail="character_name is required")
+    if from_chapter is not None and from_chapter != "":
+        try:
+            from_chapter = float(from_chapter)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="from_chapter must be a number")
+    else:
+        from_chapter = None
+    # Without a start chapter the swap would apply to the whole series, including
+    # chapters set before it happened.
+    if inhabiting and from_chapter is None:
+        raise HTTPException(
+            status_code=400, detail="a swap needs the chapter number it starts at"
+        )
+
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    char = knowledge.find_character(character_name)
+    if char is None:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    try:
+        knowledge.set_inhabiting(char.name_en, inhabiting or None, from_chapter)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    knowledge_mgr.save(knowledge)
+    return {
+        "status": "ok",
+        "character": char.name_en,
+        "inhabiting": char.inhabiting,
+        "from_chapter": char.inhabiting_from_chapter,
+    }
+
+
+@web_app.post("/api/voices/occupancy")
+async def update_occupancy(request: Request):
+    """Add or remove a bounded, paragraph-positioned body occupancy period."""
+    body = await request.json()
+    series_id = safe_id(body.get("series_id"), "series_id")
+    target_lang = body.get("target_lang", "th")
+    mind_name = (body.get("mind") or "").strip()
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=target_lang)
+    mind = knowledge.find_character(mind_name, allow_prefix=False)
+    if mind is None:
+        raise HTTPException(status_code=404, detail="mind must be a registered character")
+
+    if body.get("action") == "remove":
+        try:
+            index = int(body.get("index"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="index must be an integer")
+        if not knowledge.remove_occupancy(mind.name_en, index):
+            raise HTTPException(status_code=404, detail="occupancy period not found")
+    elif body.get("action") == "add":
+        if body.get("end_paragraph") not in (None, "", 1, "1") and body.get("end_chapter") in (None, ""):
+            raise HTTPException(status_code=400, detail="end paragraph needs an end chapter")
+        try:
+            start = StoryPosition(
+                chapter_number=body.get("start_chapter"),
+                paragraph_index=body.get("start_paragraph", 1),
+            )
+            end = None
+            if body.get("end_chapter") not in (None, ""):
+                end = StoryPosition(
+                    chapter_number=body.get("end_chapter"),
+                    paragraph_index=body.get("end_paragraph", 1),
+                )
+            knowledge.add_occupancy(mind.name_en, body.get("body") or "", start, end)
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        raise HTTPException(status_code=400, detail="action must be add or remove")
+
+    knowledge_mgr.save(knowledge)
+    return {"status": "ok", "intervals": [
+        item.model_dump() for item in mind.occupancy_intervals
+    ]}
+
+
 @web_app.post("/api/voices/generate")
 async def generate_voice_sample(request: Request):
     """Generate reference voice sample from prompt using VoxCPM2."""
@@ -1017,22 +1318,20 @@ async def generate_voice_sample(request: Request):
             or "เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
         )
         text = sample_text or "ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย"
-        out_file = voices_dir / "narrator_ref.wav"
         control = await tts.derive_control_prompt(
             effective_desc, translator=pipeline.voice_prompt_translator()
         )
-        await tts.synthesize(
-            text=text,
-            output_file=out_file,
-            voice_description=effective_desc,
-            reference_audio=None,
-            control_prompt=control,
-        )
+        # Saved as the anchor synthesis uses for this prompt, not as an upload.
+        # An upload outranks the description, so a sample saved as one froze
+        # the voice: a later description edit was silently ignored.
+        await tts.design_anchor(voices_dir, "narrator_ref", effective_desc, control, text)
+        # Generate means "use a designed voice", and an upload would outrank it.
+        # Removed only now, so a failed generation cannot lose the upload.
+        storage.delete_uploaded_voice(series_id, "narrator")
         knowledge.update_narrator_voice(
-            voice_description=effective_desc,
-            voice_ref_audio=str(out_file),
-            voice_control_prompt=control,
+            voice_description=effective_desc, voice_control_prompt=control,
         )
+        knowledge.narrator_voice_ref_audio = None
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
@@ -1055,27 +1354,23 @@ async def generate_voice_sample(request: Request):
         )
         effective_desc = voice_description or char.voice_description or default_char_desc
         text = sample_text or f"สวัสดี ข้าชื่อ{char.name_target} ยินดีที่ได้รู้จัก"
-        out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
         control = await tts.derive_control_prompt(
             effective_desc, translator=pipeline.voice_prompt_translator()
         )
-        await tts.synthesize(
-            text=text,
-            output_file=out_file,
-            voice_description=effective_desc,
-            reference_audio=None,
-            control_prompt=control,
+        # Saved as the anchor synthesis uses for this prompt, not as an upload;
+        # see the narrator branch above.
+        await tts.design_anchor(
+            voices_dir, f"{character_voice_key(char.name_en)}_ref", effective_desc, control, text,
         )
+        storage.delete_uploaded_voice(series_id, "character", char.name_en)
         knowledge.update_character_voice(
-            char.name_en,
-            voice_description=effective_desc,
-            voice_ref_audio=str(out_file),
-            voice_control_prompt=control,
+            char.name_en, voice_description=effective_desc, voice_control_prompt=control,
         )
+        char.voice_ref_audio = None
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
-            "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}",
+            "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}?lang={quote(knowledge.target_language, safe='')}",
             "voice_description": effective_desc,
             "control_prompt": control,
         }
@@ -1112,7 +1407,7 @@ async def upload_voice_sample(
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
         out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
-        audio_url = f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}"
+        audio_url = f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}?lang={quote(knowledge.target_language, safe='')}"
 
     try:
         await asyncio.to_thread(_transcode_reference_audio, tmp_path, out_file)
@@ -1179,4 +1474,3 @@ async def test_api_key(request: Request):
     body = await request.json()
     api_key = body.get("api_key")
     return await verify_openrouter_api_key(api_key)
-

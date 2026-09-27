@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -60,6 +61,41 @@ def get_chapter_file_prefix(chapter: Chapter) -> str:
     raw_title = chapter.title or f"Chapter {chapter.id}"
     safe_title = sanitize_filename(raw_title)
     return f"{num_str} - {safe_title}"
+
+
+REFERENCE_CLIP_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac")
+
+
+def anchor_digest(control_prompt: Optional[str]) -> str:
+    """The 8-hex tag in a generated anchor's name, `<stem>.<digest>.wav`.
+
+    Derived from the control prompt, so a different voice is a different file.
+    Synthesis, the Voice Studio's Generate and the glossary preview all name
+    anchors with this; computing it in more than one place would let them
+    disagree about which file is the current voice.
+    """
+    return hashlib.sha256((control_prompt or "").encode("utf-8")).hexdigest()[:8]
+
+
+def find_reference_clip(voices_dir: Path, character) -> Optional[Path]:
+    """The clip synthesis will clone this character's voice from, if one exists.
+
+    An explicit `voice_ref_audio` wins, then an upload named `<key>_ref.<ext>`.
+    Generated anchors are not returned: synthesis builds those from the voice
+    description when no clip exists. This is the single definition both the TTS
+    engine and the speaker review page use, so the voice the page shows is the
+    voice synthesis picks.
+    """
+    if character.voice_ref_audio:
+        explicit = Path(character.voice_ref_audio)
+        if explicit.exists():
+            return explicit
+    key = character_voice_key(character.name_en)
+    for ext in REFERENCE_CLIP_EXTENSIONS:
+        candidate = voices_dir / f"{key}_ref{ext}"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 
 class StorageManager:
@@ -183,17 +219,68 @@ class StorageManager:
         found += list(voices_dir.glob("narrator_ref.*.wav"))
         return [f for f in dict.fromkeys(found) if f.is_file() and ".partial." not in f.name]
 
-    def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
+    def _character_anchors(self, voices_dir: Path, safe_key: str) -> List[Path]:
+        """Generated anchors for exactly this character: `<key>_ref.<sha8>.wav`.
+
+        Matched by exact shape rather than by substring. A substring match let
+        "anna" pick up `annabelle_ref.wav`, so the glossary played -- and reset
+        deleted -- another character's voice.
+        """
+        pattern = re.compile(rf"^{re.escape(safe_key)}_ref\.[0-9a-f]{{8}}\.wav$")
+        return [
+            f for f in voices_dir.glob(f"{safe_key}_ref.*.wav")
+            if pattern.match(f.name) and f.is_file() and f.stat().st_size > 0
+        ]
+
+    def get_character_voice_file(
+        self, series_id: str, character_name: str,
+        control_prompt: Optional[str] = None, require_current: bool = False,
+    ) -> Optional[Path]:
+        """The clip the glossary should play for a character.
+
+        An upload, `<key>_ref.<ext>`, wins. With require_current, only the anchor
+        for the current control prompt is offered; a newer anchor for an old
+        prompt would misrepresent the voice TTS will use.
+        """
         voices_dir = self.get_voices_dir(series_id)
         safe_key = character_voice_key(character_name)
-        for ext in [".wav", ".mp3", ".m4a", ".flac"]:
+        for ext in REFERENCE_CLIP_EXTENSIONS:
             p = voices_dir / f"{safe_key}_ref{ext}"
-            if p.exists() and p.stat().st_size > 0:
+            if p.is_file() and p.stat().st_size > 0:
                 return p
-        for f in voices_dir.glob(f"*{safe_key}*"):
-            if f.is_file() and f.stat().st_size > 0 and f.suffix.lower() in [".wav", ".mp3", ".m4a", ".flac"]:
-                return f
+        if require_current:
+            if not control_prompt:
+                return None
+            current = voices_dir / f"{safe_key}_ref.{anchor_digest(control_prompt)}.wav"
+            return current if current.is_file() and current.stat().st_size > 0 else None
+        anchors = self._character_anchors(voices_dir, safe_key)
+        if anchors:
+            return max(anchors, key=lambda f: f.stat().st_mtime)
         return None
+
+    def _character_voice_files(self, series_id: str, character_name: str) -> List[Path]:
+        """Every clip for one character, uploads and generated anchors alike."""
+        voices_dir = self.get_voices_dir(series_id)
+        safe_key = character_voice_key(character_name)
+        found = [voices_dir / f"{safe_key}_ref{ext}" for ext in REFERENCE_CLIP_EXTENSIONS]
+        found += self._character_anchors(voices_dir, safe_key)
+        return [f for f in dict.fromkeys(found) if f.is_file()]
+
+    def delete_uploaded_voice(
+        self, series_id: str, voice_type: str, character_name: Optional[str] = None
+    ) -> None:
+        """Remove an uploaded clip (`<stem>.<ext>`), leaving generated anchors.
+
+        An upload outranks the voice description, so while one exists a
+        designed voice can never be heard.
+        """
+        voices_dir = self.get_voices_dir(series_id)
+        stem = (
+            "narrator_ref" if voice_type == "narrator"
+            else f"{character_voice_key(character_name)}_ref"
+        )
+        for ext in REFERENCE_CLIP_EXTENSIONS:
+            (voices_dir / f"{stem}{ext}").unlink(missing_ok=True)
 
     def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
         voices_dir = self.get_voices_dir(series_id)
@@ -207,10 +294,13 @@ class StorageManager:
                 removed = True
             return removed
         elif character_name:
-            target = self.get_character_voice_file(series_id, character_name)
-            if target and target.exists():
-                target.unlink()
-                return True
+            # Every clip, as for the narrator: removing only the newest would let
+            # an older anchor come back as "current" straight away.
+            removed = False
+            for target in self._character_voice_files(series_id, character_name):
+                target.unlink(missing_ok=True)
+                removed = True
+            return removed
         return False
 
     def get_chapter(self, series_id: str, chapter_id: str) -> Optional[Chapter]:

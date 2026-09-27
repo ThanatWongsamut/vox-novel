@@ -135,9 +135,14 @@
             </div>
 
             <footer class="border-t border-slate-700/60 pt-8 mt-12 flex justify-between">
-                <a href="/series/{{ chapter.book_id }}" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-xl transition">
-                    <i class="fa-solid fa-list"></i> Catalog
-                </a>
+                <div class="space-x-2">
+                    <a href="/series/{{ chapter.book_id }}" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-xl transition">
+                        <i class="fa-solid fa-list"></i> Catalog
+                    </a>
+                    <a href="/series/{{ chapter.book_id }}/speakers/{{ chapter.id }}" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-xl transition">
+                        <i class="fa-solid fa-comments"></i> Speakers
+                    </a>
+                </div>
                 <div class="space-x-2">
                     {% if prev_chap_id %}
                     <a href="/series/{{ chapter.book_id }}/read/{{ prev_chap_id }}" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-xl transition">

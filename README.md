@@ -79,6 +79,12 @@ Then open: **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
 - 🧠 **Series Glossary & Lore Hub (`/series/<id>/glossary`)**:
   - View all registered and self-learned character names and terminology.
   - Interactive form to add custom terms, character names, or corrections on the fly.
+  - In Voice Studio, record body occupancy periods using chapter and paragraph
+    positions when a mind changes bodies, returns, or changes again.
+- 🎭 **Speaker review (`/series/<id>/speakers/<chapter_id>`)**:
+  - Check the mind responsible for each spoken or thought paragraph and the
+    voice TTS will select. Correct the identity or set a one-line voice override
+    before synthesis. See [body occupancy evaluation](docs/body-occupancy-evaluation.md).
 
 ---
 

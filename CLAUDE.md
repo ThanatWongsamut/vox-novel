@@ -65,10 +65,15 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
   as a content script, so its requests carry the page origin. A wildcard with
   credentials would let any visited site read this server.
 - **The narrator anchor is content-addressed** — `voices/narrator_ref.<sha8>.wav`,
-  named for the control prompt that produced it and never rewritten. Every
+  named for the control prompt that produced it and never rewritten by synthesis. Every
   paragraph clones from it, so a mutable shared file meant a one-off `--voice` run
   or a second concurrent job could silently re-voice a series mid-book. A different
   voice is a different file; nothing needs to detect staleness.
+  Characters get anchors on the same terms, `voices/<key>_ref.<sha8>.wav`. The
+  one writer that replaces an anchor is the Voice Studio's Generate, which
+  re-rolls the voice for the current prompt in place, atomically. It saves there
+  rather than as `<key>_ref.wav`: that is the upload name, and an upload
+  outranks the voice description, so a sample saved as one froze the voice.
 - `voxcpm` is an optional `tts` extra and is **pinned**, because
   `VoxCPM2TTS._patch_voxcpm_inference` replaces an upstream method with a copy of
   that specific version's implementation. The patch verifies the installed
@@ -77,11 +82,15 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
 
 ## Known gaps
 
-- **Per-character voices are wired but inert.** `Paragraph.speaker` is never
-  assigned, so `VoxCPM2TTS.synthesize_chapter`'s character branch, the
-  per-speaker prompt cache and the emotion suffix cannot run. Everything
-  downstream of speaker detection is built and tested; adding detection turns it
-  on. Until then, every paragraph uses the narrator voice.
+- **Attribution needs a human pass before synthesis.** Measured 93.3% on a
+  held-out chapter, so roughly one spoken line in fifteen gets the wrong voice,
+  and the errors are silent. The review page at
+  `/series/<id>/speakers/<chapter>` is where that is fixed, and its corrections
+  double as gold labels -- `speaker_detected` keeps the model's guess alongside
+  the human's verdict so a run can be scored after the fact.
+- **`Paragraph.emotion` is never assigned.** The emotion suffix on the control
+  prompt is built and tested but nothing sets the field, so every line is read
+  flat. Detection returns a speech type, not an emotion.
 - **There is no CI.** The test suite only runs when someone runs it.
 
 ## Sources

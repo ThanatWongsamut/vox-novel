@@ -576,6 +576,56 @@
                                 </div>
                             </div>
 
+                            <!-- Time-bounded body occupancy for this mind -->
+                            <details class="rounded-xl border border-slate-800/80 bg-slate-950/40"
+                                     {% if char.occupancy_intervals %}open{% endif %}>
+                                <summary class="cursor-pointer px-2.5 py-1.5 text-[11px] text-slate-300 hover:text-white flex items-center gap-1.5">
+                                    <i class="fa-solid fa-masks-theater text-amber-400 text-[10px]"></i>
+                                    Body occupancy timeline
+                                    {% if char.occupancy_intervals %}
+                                    <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                        {{ char.occupancy_intervals|length }} period(s)
+                                    </span>
+                                    {% endif %}
+                                </summary>
+                                <div class="px-2.5 pb-2.5 space-y-1.5">
+                                    <p class="text-[10px] text-slate-500 leading-relaxed">
+                                        This mind speaks with the occupied body's voice and thinks
+                                        with its own. Start is inclusive; end is exclusive.
+                                    </p>
+                                    {% for period in char.occupancy_intervals %}
+                                    <div class="flex items-center gap-2 text-[10px] text-slate-300">
+                                        <span class="flex-1">{{ period.body }} · ch {{ period.start.chapter_number }} p {{ period.start.paragraph_index }}
+                                            → {% if period.end %}ch {{ period.end.chapter_number }} p {{ period.end.paragraph_index }}{% else %}ongoing{% endif %}</span>
+                                        <button type="button" onclick='removeOccupancy({{ char.name_en|tojson }}, {{ loop.index0 }})'
+                                                class="text-red-300 hover:text-red-100">Remove</button>
+                                    </div>
+                                    {% endfor %}
+                                    <div class="flex items-center gap-1.5 flex-wrap">
+                                        <select id="occupancy-body-{{ key }}"
+                                                class="flex-1 min-w-0 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-amber-200 focus:outline-none focus:border-amber-500">
+                                            <option value="">Body…</option>
+                                            {% for other in knowledge.characters.values() %}
+                                            {% if other.name_en != char.name_en %}
+                                            <option value="{{ other.name_en }}">
+                                                {{ other.name_target or other.name_en }}
+                                            </option>
+                                            {% endif %}
+                                            {% endfor %}
+                                        </select>
+                                        <input type="number" step="any" id="occupancy-start-ch-{{ key }}" placeholder="Start ch" class="w-20 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white">
+                                        <input type="number" min="1" step="1" id="occupancy-start-p-{{ key }}" placeholder="Para 1" class="w-16 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white">
+                                        <input type="number" step="any" id="occupancy-end-ch-{{ key }}" placeholder="End ch" class="w-20 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white">
+                                        <input type="number" min="1" step="1" id="occupancy-end-p-{{ key }}" placeholder="Para 1" class="w-16 bg-slate-950/80 border border-slate-700/70 rounded-lg px-2 py-1 text-xs text-white">
+                                        <button type="button"
+                                                onclick='addOccupancy({{ char.name_en|tojson }}, {{ key|tojson }})'
+                                                class="py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] rounded-lg border border-slate-700 transition">
+                                            Add
+                                        </button>
+                                    </div>
+                                </div>
+                            </details>
+
                             <!-- Sample Sentence -->
                             <div class="space-y-1">
                                 <label class="block text-[10px] font-medium text-slate-400">Sample Sentence</label>
@@ -584,7 +634,7 @@
 
                             <!-- Audio Player -->
                             <div class="space-y-1.5 pt-1">
-                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}{% if has_ref %}?v=1{% endif %}">
+                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}?lang={{ knowledge.target_language | urlencode }}{% if has_ref %}&v=1{% endif %}">
                                     Your browser does not support the audio element.
                                 </audio>
                             </div>
@@ -764,6 +814,46 @@
             el.focus();
         }
 
+        async function addOccupancy(mind, key) {
+            const body = document.getElementById('occupancy-body-' + key).value;
+            const startChapter = document.getElementById('occupancy-start-ch-' + key).value;
+            const startParagraph = document.getElementById('occupancy-start-p-' + key).value;
+            const endChapter = document.getElementById('occupancy-end-ch-' + key).value;
+            const endParagraph = document.getElementById('occupancy-end-p-' + key).value;
+            if (!body || !startChapter || (endParagraph && !endChapter)) {
+                showVoiceToast('Choose a body and start chapter; end paragraph needs an end chapter.');
+                return;
+            }
+            const resp = await fetch('/api/voices/occupancy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'add', series_id: seriesId, target_lang: targetLang,
+                    mind, body, start_chapter: startChapter,
+                    start_paragraph: startParagraph || 1,
+                    end_chapter: endChapter || null, end_paragraph: endParagraph || 1,
+                }),
+            });
+            if (resp.ok) {
+                location.reload();
+            } else {
+                const err = await resp.json();
+                showVoiceToast('Error: ' + (err.detail || 'Unknown error'));
+            }
+        }
+
+        async function removeOccupancy(mind, index) {
+            const resp = await fetch('/api/voices/occupancy', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'remove', series_id: seriesId, target_lang: targetLang,
+                    mind, index,
+                }),
+            });
+            if (resp.ok) location.reload();
+            else showVoiceToast('Could not remove occupancy period.');
+        }
+
         async function saveVoicePrompt(voiceType, charName = null, key = null) {
             let promptVal = '';
             if (voiceType === 'narrator') {
@@ -835,7 +925,7 @@
                         : document.getElementById('audio-player-' + key);
 
                     if (audioEl) {
-                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.src = data.audio_url + (data.audio_url.includes('?') ? '&' : '?') + 't=' + Date.now();
                         audioEl.load();
                         audioEl.play().catch(() => {});
                     }
@@ -902,7 +992,7 @@
                         : document.getElementById('audio-player-' + key);
 
                     if (audioEl) {
-                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.src = data.audio_url + (data.audio_url.includes('?') ? '&' : '?') + 't=' + Date.now();
                         audioEl.load();
                         audioEl.play().catch(() => {});
                     }

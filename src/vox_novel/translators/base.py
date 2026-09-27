@@ -28,6 +28,21 @@ class BaseTranslator(ABC):
         """
         raise NotImplementedError(f"{self.name} does not support one-off completions")
 
+    async def structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_model: type,
+        temperature: float = 0.0,
+    ):
+        """Run an instruction and validate the reply against a Pydantic model.
+
+        Speaker attribution needs the reply to be machine-readable, not prose.
+        Backends without schema enforcement leave this unsupported; callers are
+        expected to handle that rather than parse free text and hope.
+        """
+        raise NotImplementedError(f"{self.name} does not support structured output")
+
     @abstractmethod
     async def translate_paragraphs(
         self,
