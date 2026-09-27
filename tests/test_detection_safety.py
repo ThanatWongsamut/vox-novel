@@ -6,6 +6,7 @@ overwrote the labels a human was entering, a re-run that reported the previous
 run's guesses as its own.
 """
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -329,12 +330,27 @@ class TestTheGlossaryFindsOnlyThisCharactersClip(unittest.TestCase):
         self.put(f"{self.key('Anna')}_ref.1a2b3c4d.abc123.partial.wav")
         self.assertIsNone(self.storage.get_character_voice_file("s", "Anna"))
 
-    def test_the_newest_anchor_is_current(self):
+    def test_legacy_lookup_falls_back_to_newest_anchor(self):
         import time
         old = self.put(f"{self.key('Anna')}_ref.00000000.wav")
         new = self.put(f"{self.key('Anna')}_ref.ffffffff.wav")
         os.utime(old, (time.time() - 60, time.time() - 60))
         self.assertEqual(self.storage.get_character_voice_file("s", "Anna"), new)
+
+    def test_current_prompt_selects_its_anchor_even_when_another_is_newer(self):
+        old_prompt, new_prompt = "old prompt", "new prompt"
+        old_hash = hashlib.sha256(old_prompt.encode()).hexdigest()[:8]
+        new_hash = hashlib.sha256(new_prompt.encode()).hexdigest()[:8]
+        old = self.put(f"{self.key('Anna')}_ref.{old_hash}.wav")
+        self.put(f"{self.key('Anna')}_ref.{new_hash}.wav")
+        self.assertEqual(
+            self.storage.get_character_voice_file(
+                "s", "Anna", old_prompt, require_current=True,
+            ), old,
+        )
+        self.assertIsNone(self.storage.get_character_voice_file(
+            "s", "Anna", require_current=True,
+        ))
 
     def test_reset_removes_every_clip_and_nobody_elses(self):
         mine = [
@@ -347,6 +363,48 @@ class TestTheGlossaryFindsOnlyThisCharactersClip(unittest.TestCase):
         self.assertFalse(any(p.exists() for p in mine), "an older anchor would come back as current")
         self.assertTrue(theirs.exists(), "reset deleted another character's voice")
         self.assertIsNone(self.storage.get_character_voice_file("s", "Anna"))
+
+
+class TestVoicePreviewMatchesTheActivePrompt(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        from vox_novel.web import app as web
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.web = web
+        for manager in (web.storage, web.knowledge_mgr):
+            original = manager.base_dir
+            manager.base_dir = self.tmp
+            self.addCleanup(setattr, manager, "base_dir", original)
+        self.client = TestClient(web.web_app)
+        k = web.knowledge_mgr.load_or_init("s", target_lang="th")
+        k.add_character("Anna", "Anna", voice_description="voice A")
+        k.find_character("Anna").voice_control_prompt = "prompt A"
+        web.knowledge_mgr.save(k)
+        self.voices = web.storage.get_voices_dir("s")
+
+    def test_preview_follows_the_current_prompt_after_a_revert(self):
+        key = "anna"
+        for prompt, content in (("prompt A", b"A"), ("prompt B", b"B")):
+            digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+            (self.voices / f"{key}_ref.{digest}.wav").write_bytes(content)
+
+        response = self.client.get("/api/voices/s/character/Anna?lang=th")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"A")
+        self.assertEqual(self.client.get("/api/voices/s/character/Anna?lang=fr").status_code, 404)
+        self.assertFalse((self.tmp / "s" / "knowledge_fr.json").exists())
+
+        k = self.web.knowledge_mgr.load_or_init("s", target_lang="th")
+        k.find_character("Anna").voice_control_prompt = None
+        self.web.knowledge_mgr.save(k)
+        self.assertEqual(self.client.get("/api/voices/s/character/Anna?lang=th").status_code, 404)
+
+        (self.voices / f"{key}_ref.wav").write_bytes(b"uploaded")
+        response = self.client.get("/api/voices/s/character/Anna?lang=th")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"uploaded")
 
 
 if __name__ == "__main__":

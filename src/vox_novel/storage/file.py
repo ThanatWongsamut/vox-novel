@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -220,11 +221,15 @@ class StorageManager:
             if pattern.match(f.name) and f.is_file() and f.stat().st_size > 0
         ]
 
-    def get_character_voice_file(self, series_id: str, character_name: str) -> Optional[Path]:
+    def get_character_voice_file(
+        self, series_id: str, character_name: str,
+        control_prompt: Optional[str] = None, require_current: bool = False,
+    ) -> Optional[Path]:
         """The clip the glossary should play for a character.
 
-        Same rule as the narrator: an upload, `<key>_ref.<ext>`, wins; otherwise
-        the most recent anchor synthesis generated from the voice description.
+        An upload, `<key>_ref.<ext>`, wins. With require_current, only the anchor
+        for the current control prompt is offered; a newer anchor for an old
+        prompt would misrepresent the voice TTS will use.
         """
         voices_dir = self.get_voices_dir(series_id)
         safe_key = character_voice_key(character_name)
@@ -232,6 +237,12 @@ class StorageManager:
             p = voices_dir / f"{safe_key}_ref{ext}"
             if p.is_file() and p.stat().st_size > 0:
                 return p
+        if require_current:
+            if not control_prompt:
+                return None
+            digest = hashlib.sha256(control_prompt.encode("utf-8")).hexdigest()[:8]
+            current = voices_dir / f"{safe_key}_ref.{digest}.wav"
+            return current if current.is_file() and current.stat().st_size > 0 else None
         anchors = self._character_anchors(voices_dir, safe_key)
         if anchors:
             return max(anchors, key=lambda f: f.stat().st_mtime)

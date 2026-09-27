@@ -634,7 +634,7 @@
 
                             <!-- Audio Player -->
                             <div class="space-y-1.5 pt-1">
-                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}{% if has_ref %}?v=1{% endif %}">
+                                <audio id="audio-player-{{ key }}" class="w-full h-8 rounded-lg" controls src="/api/voices/{{ knowledge.series_id }}/character/{{ char.name_en | urlencode }}?lang={{ knowledge.target_language | urlencode }}{% if has_ref %}&v=1{% endif %}">
                                     Your browser does not support the audio element.
                                 </audio>
                             </div>
@@ -925,7 +925,7 @@
                         : document.getElementById('audio-player-' + key);
 
                     if (audioEl) {
-                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.src = data.audio_url + (data.audio_url.includes('?') ? '&' : '?') + 't=' + Date.now();
                         audioEl.load();
                         audioEl.play().catch(() => {});
                     }
@@ -992,7 +992,7 @@
                         : document.getElementById('audio-player-' + key);
 
                     if (audioEl) {
-                        audioEl.src = data.audio_url + '?t=' + Date.now();
+                        audioEl.src = data.audio_url + (data.audio_url.includes('?') ? '&' : '?') + 't=' + Date.now();
                         audioEl.load();
                         audioEl.play().catch(() => {});
                     }

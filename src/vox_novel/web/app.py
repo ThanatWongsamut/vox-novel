@@ -200,10 +200,20 @@ async def get_narrator_voice(series_id: str):
 
 
 @web_app.api_route("/api/voices/{series_id}/character/{character_name}", methods=["GET", "HEAD"])
-async def get_character_voice(series_id: str, character_name: str):
+async def get_character_voice(series_id: str, character_name: str, lang: str = "th"):
     """Serve character-specific reference voice anchor."""
     series_id = safe_id(series_id, "series_id")
-    p = storage.get_character_voice_file(series_id, character_name)
+    lang = safe_id(lang, "lang")
+    if not (knowledge_mgr.base_dir / series_id / f"knowledge_{lang}.json").is_file():
+        raise HTTPException(status_code=404, detail="Series knowledge not found")
+    knowledge = knowledge_mgr.load_or_init(series_id, target_lang=lang)
+    character = knowledge.find_character(character_name, allow_prefix=False)
+    if character is None:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+    p = storage.get_character_voice_file(
+        series_id, character.name_en, character.voice_control_prompt,
+        require_current=True,
+    )
     if not p or not p.exists():
         raise HTTPException(status_code=404, detail=f"Voice not found for character '{character_name}'")
     media_type = "audio/mpeg" if p.suffix.lower() == ".mp3" else "audio/wav"
@@ -1005,7 +1015,9 @@ async def series_glossary(request: Request, series_id: str, lang: str = "th"):
     # Map character voice status for template rendering
     char_voice_status = {}
     for key, char in knowledge.characters.items():
-        c_file = storage.get_character_voice_file(series_id, char.name_en)
+        c_file = storage.get_character_voice_file(
+            series_id, char.name_en, char.voice_control_prompt, require_current=True,
+        )
         char_voice_status[key] = {
             "has_ref": c_file is not None and c_file.exists(),
             "has_desc": bool(char.voice_description),
@@ -1364,7 +1376,7 @@ async def generate_voice_sample(request: Request):
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
-            "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}",
+            "audio_url": f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}?lang={quote(knowledge.target_language, safe='')}",
             "voice_description": effective_desc,
             "control_prompt": control,
         }
@@ -1401,7 +1413,7 @@ async def upload_voice_sample(
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
         out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
-        audio_url = f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}"
+        audio_url = f"/api/voices/{series_id}/character/{quote(char.name_en, safe='')}?lang={quote(knowledge.target_language, safe='')}"
 
     try:
         await asyncio.to_thread(_transcode_reference_audio, tmp_path, out_file)
