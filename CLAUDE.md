@@ -69,6 +69,11 @@ uv run vox-novel tts <series_id> <chapter_id> # synthesize a chapter
   paragraph clones from it, so a mutable shared file meant a one-off `--voice` run
   or a second concurrent job could silently re-voice a series mid-book. A different
   voice is a different file; nothing needs to detect staleness.
+  Characters get anchors on the same terms, `voices/<key>_ref.<sha8>.wav`. The
+  one writer that replaces an anchor is the Voice Studio's Generate, which
+  re-rolls the voice for the current prompt in place, atomically. It saves there
+  rather than as `<key>_ref.wav`: that is the upload name, and an upload
+  outranks the voice description, so a sample saved as one froze the voice.
 - `voxcpm` is an optional `tts` extra and is **pinned**, because
   `VoxCPM2TTS._patch_voxcpm_inference` replaces an upstream method with a copy of
   that specific version's implementation. The patch verifies the installed

@@ -66,6 +66,17 @@ def get_chapter_file_prefix(chapter: Chapter) -> str:
 REFERENCE_CLIP_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac")
 
 
+def anchor_digest(control_prompt: Optional[str]) -> str:
+    """The 8-hex tag in a generated anchor's name, `<stem>.<digest>.wav`.
+
+    Derived from the control prompt, so a different voice is a different file.
+    Synthesis, the Voice Studio's Generate and the glossary preview all name
+    anchors with this; computing it in more than one place would let them
+    disagree about which file is the current voice.
+    """
+    return hashlib.sha256((control_prompt or "").encode("utf-8")).hexdigest()[:8]
+
+
 def find_reference_clip(voices_dir: Path, character) -> Optional[Path]:
     """The clip synthesis will clone this character's voice from, if one exists.
 
@@ -240,8 +251,7 @@ class StorageManager:
         if require_current:
             if not control_prompt:
                 return None
-            digest = hashlib.sha256(control_prompt.encode("utf-8")).hexdigest()[:8]
-            current = voices_dir / f"{safe_key}_ref.{digest}.wav"
+            current = voices_dir / f"{safe_key}_ref.{anchor_digest(control_prompt)}.wav"
             return current if current.is_file() and current.stat().st_size > 0 else None
         anchors = self._character_anchors(voices_dir, safe_key)
         if anchors:
@@ -255,6 +265,22 @@ class StorageManager:
         found = [voices_dir / f"{safe_key}_ref{ext}" for ext in REFERENCE_CLIP_EXTENSIONS]
         found += self._character_anchors(voices_dir, safe_key)
         return [f for f in dict.fromkeys(found) if f.is_file()]
+
+    def delete_uploaded_voice(
+        self, series_id: str, voice_type: str, character_name: Optional[str] = None
+    ) -> None:
+        """Remove an uploaded clip (`<stem>.<ext>`), leaving generated anchors.
+
+        An upload outranks the voice description, so while one exists a
+        designed voice can never be heard.
+        """
+        voices_dir = self.get_voices_dir(series_id)
+        stem = (
+            "narrator_ref" if voice_type == "narrator"
+            else f"{character_voice_key(character_name)}_ref"
+        )
+        for ext in REFERENCE_CLIP_EXTENSIONS:
+            (voices_dir / f"{stem}{ext}").unlink(missing_ok=True)
 
     def delete_voice_file(self, series_id: str, voice_type: str, character_name: Optional[str] = None) -> bool:
         voices_dir = self.get_voices_dir(series_id)

@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import hashlib
 import inspect
 import logging
 import os
@@ -13,7 +12,7 @@ import httpx
 import numpy as np
 import soundfile as sf
 from vox_novel.models.domain import Chapter, Paragraph
-from vox_novel.storage.file import character_voice_key, find_reference_clip
+from vox_novel.storage.file import anchor_digest, character_voice_key, find_reference_clip
 from vox_novel.tts.base import BaseTTS
 
 logger = logging.getLogger(__name__)
@@ -996,7 +995,7 @@ class VoxCPM2TTS(BaseTTS):
         like the narrator.
         """
         voices_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256((control or "").encode("utf-8")).hexdigest()[:8]
+        digest = anchor_digest(control)
         anchor = voices_dir / f"{stem}.{digest}.wav"
         if anchor.exists() and anchor.stat().st_size > 0:
             return anchor
@@ -1038,6 +1037,44 @@ class VoxCPM2TTS(BaseTTS):
                         f"Could not link the {stem} anchor ({e}); renaming instead."
                     )
                     os.replace(staging, anchor)
+        finally:
+            staging.unlink(missing_ok=True)
+        return anchor
+
+    async def design_anchor(
+        self, voices_dir: Path, stem: str, description: str, control: str, sample_text: str
+    ) -> Path:
+        """Generate the anchor for this control prompt now -- the Voice Studio's
+        Generate button.
+
+        Written under the name synthesis uses, so the sample the user approved
+        is the clip every paragraph clones. A later description edit derives a
+        different prompt and so a different file, instead of being silently
+        outranked by this one.
+
+        Unlike `_voice_anchor`, this replaces an existing anchor for the same
+        prompt: voice design re-rolls a timbre each time, and re-rolling is what
+        the button is for. The replace is atomic, so a chapter synthesizing at the
+        same moment clones either the old clip or the new one, never a partial
+        file.
+        """
+        voices_dir.mkdir(parents=True, exist_ok=True)
+        digest = anchor_digest(control)
+        anchor = voices_dir / f"{stem}.{digest}.wav"
+        fd, staging_name = tempfile.mkstemp(
+            dir=voices_dir, prefix=f"{stem}.{digest}.", suffix=".partial.wav"
+        )
+        os.close(fd)
+        staging = Path(staging_name)
+        try:
+            await self.synthesize(
+                text=sample_text,
+                output_file=staging,
+                voice_description=description,
+                reference_audio=None,
+                control_prompt=control,
+            )
+            os.replace(staging, anchor)
         finally:
             staging.unlink(missing_ok=True)
         return anchor

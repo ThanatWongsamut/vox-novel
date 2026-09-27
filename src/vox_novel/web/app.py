@@ -1318,22 +1318,20 @@ async def generate_voice_sample(request: Request):
             or "เสียงบรรยายผู้ชาย นุ่มลึก มีชีวิตชีวา ชัดถ้อยชัดคำ เหมาะกับการเล่านิยายแฟนตาซี"
         )
         text = sample_text or "ยินดีต้อนรับสู่โลกแห่งนิยาย นี่คือเสียงตัวอย่างสำหรับผู้บรรยาย"
-        out_file = voices_dir / "narrator_ref.wav"
         control = await tts.derive_control_prompt(
             effective_desc, translator=pipeline.voice_prompt_translator()
         )
-        await tts.synthesize(
-            text=text,
-            output_file=out_file,
-            voice_description=effective_desc,
-            reference_audio=None,
-            control_prompt=control,
-        )
+        # Saved as the anchor synthesis uses for this prompt, not as an upload.
+        # An upload outranks the description, so a sample saved as one froze
+        # the voice: a later description edit was silently ignored.
+        await tts.design_anchor(voices_dir, "narrator_ref", effective_desc, control, text)
+        # Generate means "use a designed voice", and an upload would outrank it.
+        # Removed only now, so a failed generation cannot lose the upload.
+        storage.delete_uploaded_voice(series_id, "narrator")
         knowledge.update_narrator_voice(
-            voice_description=effective_desc,
-            voice_ref_audio=str(out_file),
-            voice_control_prompt=control,
+            voice_description=effective_desc, voice_control_prompt=control,
         )
+        knowledge.narrator_voice_ref_audio = None
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
@@ -1356,23 +1354,19 @@ async def generate_voice_sample(request: Request):
         )
         effective_desc = voice_description or char.voice_description or default_char_desc
         text = sample_text or f"สวัสดี ข้าชื่อ{char.name_target} ยินดีที่ได้รู้จัก"
-        out_file = voices_dir / f"{character_voice_key(char.name_en)}_ref.wav"
         control = await tts.derive_control_prompt(
             effective_desc, translator=pipeline.voice_prompt_translator()
         )
-        await tts.synthesize(
-            text=text,
-            output_file=out_file,
-            voice_description=effective_desc,
-            reference_audio=None,
-            control_prompt=control,
+        # Saved as the anchor synthesis uses for this prompt, not as an upload;
+        # see the narrator branch above.
+        await tts.design_anchor(
+            voices_dir, f"{character_voice_key(char.name_en)}_ref", effective_desc, control, text,
         )
+        storage.delete_uploaded_voice(series_id, "character", char.name_en)
         knowledge.update_character_voice(
-            char.name_en,
-            voice_description=effective_desc,
-            voice_ref_audio=str(out_file),
-            voice_control_prompt=control,
+            char.name_en, voice_description=effective_desc, voice_control_prompt=control,
         )
+        char.voice_ref_audio = None
         knowledge_mgr.save(knowledge)
         return {
             "status": "ok",
