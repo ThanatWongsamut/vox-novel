@@ -168,6 +168,14 @@ class TestSeriesPage(PlanTestCase):
         self.assertNotIn('onmouseover="alert(1)', html)
         self.assertIn("&#34;x&#34; onmouseover=&#34;alert(1)", html)
 
+    def test_a_reload_shows_only_a_live_job(self):
+        # Showing a finished job again made "Refresh chapter list" look broken:
+        # the page reloaded straight back into the same "Finished" panel.
+        self.store(novel(summary(1)))
+        html = self.page()
+        self.assertIn('job.status === "running" || job.status === "paused")) {\n                    render(job);', html)
+        self.assertIn('onclick="voxBatch.finish()"', html)
+
     def test_other_sources_do_not(self):
         self.store(novel(summary(1), source="webnovel"))
         html = self.page()

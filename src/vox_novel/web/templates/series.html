@@ -101,7 +101,8 @@
                     <button id="vox-resume-btn" onclick="voxBatch.command('resume')" class="hidden px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition">Continue</button>
                     <button id="vox-skip-btn" onclick="voxBatch.command('skip')" class="hidden px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">Skip chapter</button>
                     <button id="vox-cancel-btn" onclick="voxBatch.command('cancel')" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg transition">Cancel</button>
-                    <button id="vox-refresh-btn" onclick="location.reload()" class="hidden px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition">Refresh chapter list</button>
+                    <button id="vox-dismiss-btn" onclick="voxBatch.dismiss()" class="hidden px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg transition">Dismiss</button>
+                    <button id="vox-refresh-btn" onclick="voxBatch.finish()" class="hidden px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition">Refresh chapter list</button>
                 </div>
             </div>
 
@@ -532,6 +533,7 @@
                 show($("vox-skip-btn"), job.status === "paused");
                 show($("vox-cancel-btn"), active);
                 show($("vox-refresh-btn"), !active && job.imported > 0 && job.seriesId === SERIES_ID);
+                show($("vox-dismiss-btn"), !active);
             }
 
             async function command(name, payload) {
@@ -554,11 +556,14 @@
                 installed = true;
                 show($("vox-batch"), true);
                 document.querySelectorAll(".vox-no-ext").forEach((el) => show(el, false));
-                // Pick up a job already in progress, e.g. after reloading the page.
+                // Pick up a job still in progress, e.g. after reloading the page. A
+                // finished one is not shown again: its result has already been seen,
+                // and a stale "Finished" panel reads as if nothing was refreshed.
                 const reply = await send("status");
-                if (reply.ok && reply.job) {
-                    render(reply.job);
-                    if (reply.job.status === "running" || reply.job.status === "paused") watch();
+                const job = reply.ok ? reply.job : null;
+                if (job && (job.status === "running" || job.status === "paused")) {
+                    render(job);
+                    watch();
                 }
             }
 
@@ -567,8 +572,19 @@
             if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", detect);
             else detect();
 
+            // Clear a finished job's result from the extension, then hide the panel.
+            async function dismiss() {
+                await send("clear");
+                show($("vox-batch-progress"), false);
+                show($("vox-batch-start"), true);
+                document.querySelectorAll("button.vox-fetch-btn").forEach((b) => (b.disabled = false));
+            }
+
             return {
                 command,
+                dismiss,
+                // Refresh chapter list: the result has been seen, so clear it first.
+                finish: () => dismiss().then(() => location.reload()),
                 installed: () => installed,
                 // One chapter -- also a re-fetch, which planning otherwise leaves out.
                 fetchOne: (no, imported) =>

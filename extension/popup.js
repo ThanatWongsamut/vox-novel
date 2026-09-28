@@ -217,6 +217,7 @@ function setupBatch(tab) {
   const resumeBtn = document.getElementById("batch-resume-btn");
   const skipBtn = document.getElementById("batch-skip-btn");
   const cancelBtn = document.getElementById("batch-cancel-btn");
+  const dismissBtn = document.getElementById("batch-dismiss-btn");
 
   const seriesId = VoxCore.readtoonSeriesId(tab.url);
 
@@ -231,8 +232,12 @@ function setupBatch(tab) {
     card.hidden = !active && !seriesId && !job;
     startPane.hidden = !!active || !seriesId;
     runningPane.hidden = !job;
-
-    if (!job) return;
+    // With no job, offer a new one on a ReadToon page, else show nothing.
+    if (!job) {
+      card.hidden = !seriesId;
+      startPane.hidden = !seriesId;
+      return;
+    }
     const done = job.imported + job.skipped.length;
     barFill.style.width = job.total ? `${Math.round((done / job.total) * 100)}%` : "100%";
 
@@ -255,6 +260,7 @@ function setupBatch(tab) {
     resumeBtn.hidden = job.status !== "paused";
     skipBtn.hidden = job.status !== "paused";
     cancelBtn.hidden = !active;
+    dismissBtn.hidden = active;
   }
 
   async function run(command, payload) {
@@ -278,6 +284,7 @@ function setupBatch(tab) {
   resumeBtn.addEventListener("click", () => run("resume"));
   skipBtn.addEventListener("click", () => run("skip"));
   cancelBtn.addEventListener("click", () => run("cancel"));
+  dismissBtn.addEventListener("click", () => run("clear"));
 
   // Live progress while the popup is open.
   const port = chrome.runtime.connect({ name: "voxJob" });

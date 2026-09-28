@@ -17,7 +17,7 @@ const TAB_KEY = "voxJobTabId";
 const HEARTBEAT_ALARM = "vox-job-heartbeat";
 const CUSTOM_RELAY_ID = "vox-relay-custom";
 const PAGE_LOAD_TIMEOUT_MS = 45000;
-const COMMANDS = new Set(["start", "pause", "resume", "skip", "cancel", "status"]);
+const COMMANDS = new Set(["start", "pause", "resume", "skip", "cancel", "status", "clear"]);
 
 // Only guards against two drivers in one worker. After a restart nothing is
 // mid-step -- the step died with the old worker -- so starting fresh is right.
@@ -308,6 +308,15 @@ async function handle(command, payload) {
     case "pause":
     case "cancel":
       return { job: C.summarize(await dispatch({ type: command })) };
+    case "clear": {
+      // Dismiss a finished job's result. A live job is cancelled, not cleared,
+      // so its place is never lost by accident.
+      if (C.isActive(await loadJob())) throw new Error("Cancel the running job first.");
+      await chrome.storage.local.remove([JOB_KEY, TAB_KEY]);
+      publish(null);
+      await syncHeartbeat(null);
+      return { job: null };
+    }
     default:
       throw new Error(`Unknown command: ${command}`);
   }

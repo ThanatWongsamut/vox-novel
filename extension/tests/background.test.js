@@ -70,8 +70,9 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
           return Object.fromEntries(list.filter((k) => k in store).map((k) => [k, structuredClone(store[k])]));
         },
         set: async (items) => Object.assign(store, structuredClone(items)),
-        remove: async (key) => {
-          delete store[key];
+        // Like Chrome: one key or a list of them.
+        remove: async (keys) => {
+          for (const key of [].concat(keys)) delete store[key];
         },
       },
       onChanged: event(),
@@ -351,4 +352,23 @@ test("a malformed series id is refused", async () => {
   const b = makeBrowser({ plan: planFor(1) });
   const reply = await b.send("start", { seriesId: "../evil" });
   assert.equal(reply.ok, false);
+});
+
+test("a finished job's result can be dismissed", async () => {
+  const b = makeBrowser({ plan: planFor(1) });
+  await b.send("start", { seriesId: "s" });
+  await b.until("done");
+  const reply = await b.send("clear");
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(await b.job(), null);
+  assert.equal(b.store.voxJob, undefined);
+});
+
+test("a live job cannot be dismissed, only cancelled", async () => {
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "locked" } });
+  await b.send("start", { seriesId: "s" });
+  await b.until("paused");
+  const reply = await b.send("clear");
+  assert.equal(reply.ok, false);
+  assert.equal((await b.job()).status, "paused", "a paused job lost its place");
 });
