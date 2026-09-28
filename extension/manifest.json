@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VoxNovel Importer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Import ReadToon chapters into VoxNovel for reading and VoxCPM2 TTS -- one chapter with a click, or every missing chapter as a batch.",
   "permissions": [
     "activeTab",

@@ -176,6 +176,16 @@ class TestSeriesPage(PlanTestCase):
         self.assertIn('job.status === "running" || job.status === "paused")) {\n                    render(job);', html)
         self.assertIn('onclick="voxBatch.finish()"', html)
 
+    def test_the_page_never_requires_an_extension_newer_than_the_one_shipped(self):
+        # Otherwise every user would be told to reload an extension that cannot
+        # satisfy the page, and the batch panel would never work.
+        import json, re
+        self.store(novel(summary(1)))
+        required = re.search(r'const REQUIRED_EXTENSION = "([0-9.]+)";', self.page()).group(1)
+        manifest = json.loads((Path(__file__).parent.parent / "extension" / "manifest.json").read_text())
+        as_tuple = lambda v: tuple(int(x) for x in v.split("."))
+        self.assertLessEqual(as_tuple(required), as_tuple(manifest["version"]))
+
     def test_other_sources_do_not(self):
         self.store(novel(summary(1), source="webnovel"))
         html = self.page()

@@ -458,6 +458,11 @@
         // chapter list itself and refuses any URL that is not a ReadToon chapter.
         const voxBatch = (() => {
             const SERIES_ID = {{ novel.id | tojson }};
+            // The oldest extension this page works with. Chrome keeps running the
+            // extension it last loaded, so after an update the page and the extension
+            // can disagree -- an older one ignored re-fetch and reported "0 of 0".
+            // Bump alongside extension/manifest.json when the page needs something new.
+            const REQUIRED_EXTENSION = "1.2.0";
             const FROM_PAGE = "voxnovel-page";
             const FROM_EXTENSION = "voxnovel-extension";
             const pending = new Map();
@@ -516,7 +521,11 @@
                     : "";
                 const other = job.seriesId !== SERIES_ID ? ` [${job.seriesTitle}]` : "";
                 let status;
-                if (job.status === "done") {
+                if (job.status === "done" && job.total === 0) {
+                    status = job.alreadyImported
+                        ? "Nothing to import: every chapter in that range is already in VoxNovel."
+                        : "Nothing to import: no chapters in that range.";
+                } else if (job.status === "done") {
                     status = `Finished: imported ${job.imported} of ${job.total}.${skipped}`;
                 } else if (job.status === "cancelled") {
                     status = `Cancelled after importing ${job.imported}.`;
@@ -551,10 +560,28 @@
                 return command("start", { seriesId: SERIES_ID, from, to });
             }
 
+            function olderThan(version, required) {
+                const a = String(version).split(".").map(Number);
+                const b = required.split(".").map(Number);
+                for (let i = 0; i < b.length; i++) {
+                    if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
+                }
+                return false;
+            }
+
             async function detect() {
-                if (installed || !document.documentElement.dataset.voxnovelExtension) return;
-                installed = true;
+                const version = document.documentElement.dataset.voxnovelExtension;
+                if (installed || !version) return;
                 show($("vox-batch"), true);
+                if (olderThan(version, REQUIRED_EXTENSION)) {
+                    // Left uninstalled, so fetches fall back to the server rather
+                    // than go through an extension that would get them wrong.
+                    show($("vox-batch-start"), false);
+                    showError(`The VoxNovel extension is out of date (${version}; this page needs ${REQUIRED_EXTENSION}). ` +
+                              "Reload it in chrome://extensions, then refresh this page.");
+                    return;
+                }
+                installed = true;
                 document.querySelectorAll(".vox-no-ext").forEach((el) => show(el, false));
                 // Pick up a job still in progress, e.g. after reloading the page. A
                 // finished one is not shown again: its result has already been seen,
