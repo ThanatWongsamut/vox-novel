@@ -501,6 +501,11 @@ async def extension_import(req: ExtensionImportRequest):
                 and len(novel.chapters[existing_idx].title) > len(chapter.title)
             ):
                 summary_item.title = novel.chapters[existing_idx].title
+            # What the catalog knows and an import does not: whether ReadToon
+            # sells the chapter, and whether audio exists. Replacing the entry
+            # wholesale relabelled every imported paid chapter as free.
+            summary_item.is_locked = novel.chapters[existing_idx].is_locked
+            summary_item.has_audio = novel.chapters[existing_idx].has_audio
             novel.chapters[existing_idx] = summary_item
         else:
             novel.chapters.append(summary_item)

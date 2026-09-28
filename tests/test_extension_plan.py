@@ -100,6 +100,21 @@ class TestPlan(PlanTestCase):
         self.assertEqual([c["no"] for c in self.plan().json()["chapters"]], [2.0], "default changed")
 
 
+class TestImportKeepsTheCatalog(PlanTestCase):
+    def test_importing_a_paid_chapter_keeps_it_marked_paid(self):
+        # Found in a real browser: every imported paid chapter became "free",
+        # because the import replaced its catalog entry with is_locked=False.
+        self.store(novel(summary(1), summary(2, locked=True)))
+        res = self.client.post("/api/extension/import", json={
+            "url": "https://readtoon.com/content/s/2", "series_id": "s", "chapter_no": 2,
+            "chapter_title": "ตอนที่ 2", "paragraphs": ["x"],
+            "source": "readtoon", "source_language": "th",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        stored = {c.id: c.is_locked for c in web.storage.get_novel("s").chapters}
+        self.assertEqual(stored, {"1": False, "2": True})
+
+
 class TestCatalogRefresh(PlanTestCase):
     def test_an_unknown_series_fetches_its_catalog(self):
         self.scrape.side_effect = None
