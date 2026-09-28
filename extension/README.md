@@ -56,6 +56,9 @@ It never solves a check, never buys a chapter, and does not disguise itself as
 a person. Closing the job tab or restarting Chrome pauses the job; nothing runs
 unattended after a restart.
 
+When a job is done its tab closes -- unless you have since used that tab for
+something else. A cancelled job leaves its tab open.
+
 **Check ReadToon's terms** before running a batch over a whole novel -- they
 may restrict automated copying even of chapters you have bought.
 

@@ -38,6 +38,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
   const tabs = new Map();
   let nextTab = 1;
   const imports = [];
+  const closed = [];
   const planQueries = [];
   const opened = [];
   const focused = [];
@@ -92,6 +93,11 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
         if (props.url) load(tab, props.url);
         if (props.active) focused.push(tab.url);
         return { ...tab };
+      },
+      remove: async (id) => {
+        if (!tabs.delete(id)) throw new Error("No tab with id");
+        closed.push(id);
+        onRemoved.fire(id, {});
       },
       get: async (id) => {
         const tab = tabs.get(id);
@@ -183,7 +189,11 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
     load(tab, url);
   }
 
-  return { send, job, until, imports, opened, focused, pages, reload, store, planQueries };
+  function openTabs() {
+    return [...tabs.values()];
+  }
+
+  return { send, job, until, imports, opened, focused, pages, reload, store, planQueries, closed, openTabs };
 }
 
 function planFor(...nos) {
@@ -371,4 +381,45 @@ test("a live job cannot be dismissed, only cancelled", async () => {
   const reply = await b.send("clear");
   assert.equal(reply.ok, false);
   assert.equal((await b.job()).status, "paused", "a paused job lost its place");
+});
+
+test("the job tab closes once the job is done", async () => {
+  const b = makeBrowser({ plan: planFor(1, 2) });
+  await b.send("start", { seriesId: "s" });
+  await b.until("done");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(b.closed.length, 1);
+  assert.deepEqual(b.openTabs(), []);
+});
+
+test("skipping the last chapter finishes the job and closes its tab", async () => {
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "locked" } });
+  await b.send("start", { seriesId: "s" });
+  await b.until("paused");
+  assert.deepEqual(b.closed, [], "a paused job's tab must stay open for the user");
+  await b.send("skip");
+  await b.until("done");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(b.closed.length, 1);
+});
+
+test("a cancelled job keeps its tab", async () => {
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "login" } });
+  await b.send("start", { seriesId: "s" });
+  await b.until("paused");
+  await b.send("cancel");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(b.closed, []);
+});
+
+test("a tab the user has taken over is not closed", async () => {
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "locked" } });
+  await b.send("start", { seriesId: "s" });
+  await b.until("paused");
+  // The user wanders off to another site in that tab, then skips.
+  b.openTabs()[0].url = "https://news.example/";
+  await b.send("skip");
+  await b.until("done");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(b.closed, []);
 });

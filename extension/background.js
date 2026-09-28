@@ -48,6 +48,7 @@ async function saveJob(job) {
   await chrome.storage.local.set({ [JOB_KEY]: job });
   publish(job);
   await syncHeartbeat(job);
+  if (job && job.status === "done") await closeJobTab();
 }
 
 async function dispatch(event) {
@@ -137,6 +138,24 @@ async function navigateAndWait(url) {
       reject(e);
     });
   });
+}
+
+/**
+ * Close the job's tab once the job is done. Only while it still shows a
+ * ReadToon chapter: if the user has since used the tab for something else, it
+ * is theirs now. A cancelled job keeps its tab -- cancelling often happens
+ * mid-login or mid-purchase on exactly that page.
+ */
+async function closeJobTab() {
+  const tab = await existingTab();
+  await chrome.storage.local.remove(TAB_KEY);
+  if (tab && C.isReadtoonChapterUrl(tab.url)) {
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch (e) {
+      // Already closed.
+    }
+  }
 }
 
 async function bringJobTabForward() {
