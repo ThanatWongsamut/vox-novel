@@ -33,7 +33,10 @@ function event() {
  * there: "ok", "locked", "challenge", ... or { redirectTo } for a tab that
  * lands somewhere else.
  */
-function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
+function makeBrowser({ plan, pages = {}, importStatus = () => 200,
+  beforeRead = async () => {}, beforePlan = async () => {}, beforeImport = async () => {},
+  beforeFocus = async () => {},
+} = {}) {
   const store = {};
   const tabs = new Map();
   let nextTab = 1;
@@ -107,6 +110,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
       sendMessage: async (id, message) => {
         const tab = tabs.get(id);
         assert.equal(message.action, "EXTRACT_WHEN_READY");
+        await beforeRead(tab.url);
         const page = pages[tab.url] || "ok";
         if (page === "ok") {
           return {
@@ -122,7 +126,7 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
         return { ok: true, status: page, details: { url: tab.url } };
       },
     },
-    windows: { update: async () => ({}) },
+    windows: { update: async () => { await beforeFocus(); return {}; } },
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: event() },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
     scripting: { registerContentScripts: async () => {}, unregisterContentScripts: async () => {} },
@@ -133,10 +137,12 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
     const u = new URL(url);
     if (u.pathname === "/api/extension/plan") {
       planQueries.push(Object.fromEntries(u.searchParams));
+      await beforePlan(u);
       return { ok: true, status: 200, json: async () => structuredClone(plan) };
     }
     if (u.pathname === "/api/extension/import") {
       const body = JSON.parse(init.body);
+      await beforeImport(body, init);
       const status = importStatus(body);
       if (status === 200) imports.push(body.chapter_no);
       return { ok: status === 200, status, json: async () => ({ detail: `HTTP ${status}` }) };
@@ -146,7 +152,8 @@ function makeBrowser({ plan, pages = {}, importStatus = () => 200 } = {}) {
 
   const context = vm.createContext({
     chrome, fetch, URL, URLSearchParams, console, structuredClone,
-    setTimeout, clearTimeout, setImmediate,
+    setTimeout, clearTimeout, setImmediate, AbortController,
+    crypto: require("node:crypto").webcrypto,
   });
   context.self = context;
   context.globalThis = context;
@@ -204,6 +211,151 @@ function planFor(...nos) {
     chapters: nos.map((no) => ({ no, url: chapterUrl(no), title: `ตอนที่ ${no}`, is_locked: false })),
   };
 }
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+test("overlapping starts refuse the second request while a plan is pending", async () => {
+  const entered = deferred(), release = deferred();
+  let plans = 0;
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "locked" },
+    beforePlan: async () => {
+      if (++plans === 1) { entered.resolve(); await release.promise; }
+    },
+  });
+  const first = b.send("start", { seriesId: "s" });
+  await entered.promise;
+  const second = await b.send("start", { seriesId: "s" });
+  release.resolve();
+  assert.equal((await first).ok, true);
+  assert.equal(second.ok, false);
+  assert.equal(b.planQueries.length, 1);
+  await b.until("paused");
+});
+
+test("a failed plan releases the start reservation", async () => {
+  let fail = true;
+  const b = makeBrowser({ plan: planFor(1), beforePlan: async () => {
+    if (fail) throw new Error("offline");
+  } });
+  assert.equal((await b.send("start", { seriesId: "s" })).ok, false);
+  fail = false;
+  assert.equal((await b.send("start", { seriesId: "s" })).ok, true);
+  await b.until("done");
+});
+
+test("cancel during extraction prevents the import request", async () => {
+  const entered = deferred(), release = deferred(), returned = deferred();
+  const b = makeBrowser({ plan: planFor(1), beforeRead: async () => {
+    entered.resolve(); await release.promise; returned.resolve();
+  } });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await b.send("cancel");
+  release.resolve();
+  await returned.promise;
+  // Flush the driver's promise continuations after the content reply.
+  await new Promise(setImmediate);
+  assert.equal((await b.job()).status, "cancelled");
+  assert.deepEqual(b.imports, []);
+});
+
+test("pause then skip discards the old extraction and imports the next chapter", async () => {
+  const entered = deferred(), release = deferred();
+  const b = makeBrowser({ plan: planFor(1, 2), beforeRead: async (url) => {
+    if (url === chapterUrl(1)) { entered.resolve(); await release.promise; }
+  } });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await b.send("pause");
+  await b.send("skip");
+  release.resolve();
+  const done = await b.until("done");
+  assert.deepEqual(b.imports, [2]);
+  assert.equal(done.skipped[0].no, 1);
+});
+
+test("pause then resume invalidates the first extraction even at the same chapter", async () => {
+  const entered = deferred(), release = deferred();
+  let reads = 0;
+  const b = makeBrowser({ plan: planFor(1), beforeRead: async () => {
+    reads += 1;
+    if (reads === 1) { entered.resolve(); await release.promise; }
+  } });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await b.send("pause");
+  await b.send("resume");
+  release.resolve();
+  await b.until("done");
+  assert.equal(reads, 2);
+  assert.deepEqual(b.imports, [1]);
+});
+
+test("cancel aborts an import request already waiting on the server", { timeout: 1000 }, async () => {
+  const entered = deferred(), aborted = deferred();
+  const b = makeBrowser({ plan: planFor(1), beforeImport: async (body, init) => {
+    entered.resolve();
+    await new Promise((resolve, reject) => init.signal.addEventListener("abort", () => {
+      aborted.resolve(); reject(new Error("aborted"));
+    }, { once: true }));
+  } });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await b.send("cancel");
+  await aborted.promise;
+  await new Promise(setImmediate);
+  assert.equal((await b.job()).status, "cancelled");
+  assert.deepEqual(b.imports, []);
+});
+
+test("overlapping cancel and pause cannot resurrect a cancelled job", async () => {
+  const entered = deferred(), release = deferred();
+  const b = makeBrowser({ plan: planFor(1), beforeRead: async () => {
+    entered.resolve(); await release.promise;
+  } });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await Promise.all([b.send("cancel"), b.send("pause")]);
+  release.resolve();
+  await new Promise(setImmediate);
+  assert.equal((await b.job()).status, "cancelled");
+  assert.deepEqual(b.imports, []);
+});
+
+test("a new job cannot receive the cancelled job's pending extraction", async () => {
+  const entered = deferred(), release = deferred();
+  let reads = 0;
+  const b = makeBrowser({ plan: planFor(1), beforeRead: async () => {
+    if (++reads === 1) { entered.resolve(); await release.promise; }
+  } });
+  const first = await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  await b.send("cancel");
+  const second = await b.send("start", { seriesId: "s" });
+  assert.notEqual(second.job.id, first.job.id);
+  release.resolve();
+  await b.until("done");
+  assert.equal(reads, 2);
+  assert.deepEqual(b.imports, [1]);
+});
+
+test("resume while the previous driver is finishing its pause continues immediately", async () => {
+  const entered = deferred(), release = deferred();
+  const b = makeBrowser({ plan: planFor(1), pages: { [chapterUrl(1)]: "locked" },
+    beforeFocus: async () => { entered.resolve(); await release.promise; },
+  });
+  await b.send("start", { seriesId: "s" });
+  await entered.promise;
+  b.pages[chapterUrl(1)] = "ok";
+  await b.send("resume");
+  release.resolve();
+  await b.until("done");
+  assert.deepEqual(b.imports, [1]);
+});
 
 test("imports every chapter, in order, in one tab", async () => {
   const b = makeBrowser({ plan: planFor(1, 2, 3) });

@@ -22,6 +22,9 @@ const COMMANDS = new Set(["start", "pause", "resume", "skip", "cancel", "status"
 // Only guards against two drivers in one worker. After a restart nothing is
 // mid-step -- the step died with the old worker -- so starting fresh is right.
 let driving = false;
+let starting = false;
+let jobUpdates = Promise.resolve();
+let activeImport = null;
 const ports = new Set();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,18 +47,39 @@ async function loadJob() {
   return (await chrome.storage.local.get(JOB_KEY))[JOB_KEY] || null;
 }
 
+// Serialize storage read/modify/write operations. Network and page waits stay
+// outside this queue so pause/cancel can take effect while they are pending.
+function withJobLock(action) {
+  const result = jobUpdates.then(action);
+  jobUpdates = result.catch(() => {});
+  return result;
+}
+
+function sameAttempt(job, snapshot) {
+  return !!job && job.id === snapshot.id && job.index === snapshot.index &&
+    (job.revision || 0) === (snapshot.revision || 0) && job.status === "running";
+}
+
 async function saveJob(job) {
+  if (activeImport) activeImport.controller.abort();
+  job = { ...job, revision: (job.revision || 0) + 1 };
   await chrome.storage.local.set({ [JOB_KEY]: job });
   publish(job);
   await syncHeartbeat(job);
   if (job && job.status === "done") await closeJobTab();
+  return job;
 }
 
-async function dispatch(event) {
+async function reduceAndSave(event, guard = () => true) {
   const job = await loadJob();
+  if (!guard(job)) return null;
   const next = C.reduce(job, event, Date.now());
-  if (next !== job) await saveJob(next);
+  if (next !== job) return saveJob(next);
   return next;
+}
+
+function dispatch(event, guard) {
+  return withJobLock(() => reduceAndSave(event, guard));
 }
 
 // ---------------------------------------------------------- presentation --
@@ -185,17 +209,29 @@ async function readPage(tabId) {
 
 // ---------------------------------------------------------- the server --
 
-async function postImport(details) {
-  let response;
-  try {
-    response = await fetch(`${await getServerUrl()}/api/extension/import`, {
+async function postImport(details, snapshot) {
+  const serverUrl = await getServerUrl();
+  const pending = await withJobLock(async () => {
+    if (!sameAttempt(await loadJob(), snapshot)) return null;
+    const controller = new AbortController();
+    const request = { controller };
+    activeImport = request;
+    // Initiate the request under the same lock as the validity check, but wait
+    // outside it. A subsequent state change aborts the request.
+    request.response = fetch(`${serverUrl}/api/extension/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(C.buildImportPayload(details)),
-    });
-  } catch (e) {
-    return { type: "server", detail: String(e.message || e) };
-  }
+      signal: controller.signal,
+    }).then((response) => ({ response }), (error) => ({ error }));
+    return request;
+  });
+  if (!pending) return { type: "stale" };
+  const result = await pending.response;
+  if (activeImport === pending) activeImport = null;
+  if (pending.controller.signal.aborted) return { type: "stale" };
+  if (result.error) return { type: "server", detail: String(result.error.message || result.error) };
+  const response = result.response;
   if (response.ok) return { type: "imported" };
   const body = await response.json().catch(() => ({}));
   const detail = body.detail || `HTTP ${response.status}`;
@@ -225,7 +261,7 @@ async function fetchPlan({ seriesId, from, to, includeImported }) {
 // ----------------------------------------------------------- the driver --
 
 /** Load, read and import one chapter. Returns an outcome for the reducer. */
-async function attempt(chapter) {
+async function attempt(chapter, snapshot) {
   let tab;
   try {
     tab = await navigateAndWait(chapter.url);
@@ -240,27 +276,30 @@ async function attempt(chapter) {
   if (!reply || !reply.ok) return { type: "empty", detail: "Could not read the page." };
   if (reply.status !== "ok") return { type: reply.status };
   if (!C.samePage(reply.details.url, chapter.url)) return { type: "redirected" };
-  return postImport(reply.details);
+  return postImport(reply.details, snapshot);
 }
 
 async function drive() {
   if (driving) return;
   driving = true;
+  let snapshot = null;
   try {
     for (;;) {
       const job = await loadJob();
+      snapshot = job;
       if (!job || job.status !== "running") return;
       const chapter = C.current(job);
       if (!chapter) return;
 
-      const outcome = await attempt(chapter);
+      const outcome = await attempt(chapter, job);
+      if (outcome.type === "stale") continue;
 
-      // The user may have paused, skipped or cancelled while the page loaded.
-      // Then this outcome is stale; the loop re-reads the job and acts on that.
-      const now = await loadJob();
-      if (!now || now.id !== job.id || now.index !== job.index || now.status !== "running") continue;
-
-      const next = await dispatch({ type: "outcome", outcome: outcome.type, detail: outcome.detail });
+      // Validate and apply together, including pause/resume at the same index.
+      const next = await dispatch(
+        { type: "outcome", outcome: outcome.type, detail: outcome.detail },
+        (now) => sameAttempt(now, job),
+      );
+      if (!next) continue;
       if (next.status === "paused") {
         await bringJobTabForward();
         return;
@@ -269,6 +308,10 @@ async function drive() {
     }
   } finally {
     driving = false;
+    // A resume/start can arrive while the old driver is finishing a pause.
+    // Its drive() call saw the guard; pick up that running job now.
+    const now = await loadJob();
+    if (now?.status === "running" && (!snapshot || !sameAttempt(now, snapshot))) drive();
   }
 }
 
@@ -298,25 +341,37 @@ async function handle(command, payload) {
     case "status":
       return { job: C.summarize(await loadJob()) };
     case "start": {
-      if (C.isActive(await loadJob())) {
-        throw new Error("A batch import is already running. Finish or cancel it first.");
-      }
-      const seriesId = String((payload && payload.seriesId) || "");
-      if (!/^[A-Za-z0-9._-]+$/.test(seriesId)) throw new Error("A series id is required.");
-      const plan = await fetchPlan({
-        seriesId,
-        ...readRange(payload || {}),
-        includeImported: !!(payload && payload.includeImported),
-      });
-      const problem = C.validatePlan(plan);
-      if (problem) throw new Error(problem);
+      if (starting) throw new Error("A batch import is already starting. Please wait.");
+      starting = true;
+      try {
+        if (C.isActive(await loadJob())) {
+          throw new Error("A batch import is already running. Finish or cancel it first.");
+        }
+        const seriesId = String((payload && payload.seriesId) || "");
+        if (!/^[A-Za-z0-9._-]+$/.test(seriesId)) throw new Error("A series id is required.");
+        const plan = await fetchPlan({
+          seriesId,
+          ...readRange(payload || {}),
+          includeImported: !!(payload && payload.includeImported),
+        });
+        const problem = C.validatePlan(plan);
+        if (problem) throw new Error(problem);
 
-      // A new job gets a new tab rather than taking over whatever the last one left.
-      await chrome.storage.local.remove(TAB_KEY);
-      const job = C.createJob(plan, Date.now());
-      await saveJob(job);
-      drive();
-      return { job: C.summarize(job) };
+        // A new job gets a new tab rather than taking over the last one's tab.
+        const job = await withJobLock(async () => {
+          if (C.isActive(await loadJob())) {
+            throw new Error("A batch import is already running. Finish or cancel it first.");
+          }
+          await chrome.storage.local.remove(TAB_KEY);
+          const created = C.createJob(plan, Date.now());
+          created.id = `job-${crypto.randomUUID()}`;
+          return saveJob(created);
+        });
+        drive();
+        return { job: C.summarize(job) };
+      } finally {
+        starting = false;
+      }
     }
     case "resume":
     case "skip": {
@@ -330,11 +385,13 @@ async function handle(command, payload) {
     case "clear": {
       // Dismiss a finished job's result. A live job is cancelled, not cleared,
       // so its place is never lost by accident.
-      if (C.isActive(await loadJob())) throw new Error("Cancel the running job first.");
-      await chrome.storage.local.remove([JOB_KEY, TAB_KEY]);
-      publish(null);
-      await syncHeartbeat(null);
-      return { job: null };
+      return withJobLock(async () => {
+        if (C.isActive(await loadJob())) throw new Error("Cancel the running job first.");
+        await chrome.storage.local.remove([JOB_KEY, TAB_KEY]);
+        publish(null);
+        await syncHeartbeat(null);
+        return { job: null };
+      });
     }
     default:
       throw new Error(`Unknown command: ${command}`);
@@ -375,28 +432,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Completing a challenge or a login usually ends with the chapter loading
 // again in the job tab. That is taken as "carry on".
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
-  if (info.status !== "complete" || tabId !== (await storedTabId())) return;
-  const job = await loadJob();
-  if (C.shouldAutoResume(job, tab.url)) {
-    await dispatch({ type: "resume" });
-    drive();
-  }
+  if (info.status !== "complete") return;
+  const job = await withJobLock(async () => {
+    if (tabId !== (await storedTabId())) return null;
+    return reduceAndSave({ type: "resume" }, (now) => C.shouldAutoResume(now, tab.url));
+  });
+  if (job) drive();
 });
 
 // Closing the job tab pauses the job rather than quietly opening another.
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (tabId !== (await storedTabId())) return;
-  await chrome.storage.local.remove(TAB_KEY);
-  const job = await loadJob();
-  if (job && job.status === "running") await dispatch({ type: "pause" });
+  await withJobLock(async () => {
+    if (tabId !== (await storedTabId())) return;
+    await chrome.storage.local.remove(TAB_KEY);
+    await reduceAndSave({ type: "pause" });
+  });
 });
 
 // After Chrome restarts, a job comes back paused, not running unattended.
 chrome.runtime.onStartup.addListener(async () => {
-  await chrome.storage.local.remove(TAB_KEY);
-  const job = await loadJob();
-  if (job && job.status === "running") await dispatch({ type: "pause" });
-  else publish(job);
+  await withJobLock(async () => {
+    await chrome.storage.local.remove(TAB_KEY);
+    publish(await reduceAndSave({ type: "pause" }));
+  });
   await syncRelayRegistration();
 });
 

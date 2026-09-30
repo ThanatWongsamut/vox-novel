@@ -1,4 +1,6 @@
+from collections import Counter
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -70,8 +72,9 @@ class Chapter(BaseModel):
 
         Paragraphs are matched by their text, not their position, so a line
         added or removed upstream shifts nothing after it. A paragraph whose text
-        changed keeps nothing: a label is only known to be right for the words it
-        was made on. Repeated lines pair up in order. Returns how many paragraphs
+        changed keeps nothing. Repeated text is carried only inside an unchanged
+        sequence bounded by matching unique paragraphs or chapter boundaries;
+        ambiguous occurrences need review again. Returns how many paragraphs
         kept their attribution.
         """
         if previous is None:
@@ -81,20 +84,36 @@ class Chapter(BaseModel):
             # Detection and review both work on the text as it will be read.
             return (p.translated_text or p.text or "").strip()
 
-        unused: Dict[str, List["Paragraph"]] = {}
-        for old in previous.paragraphs:
-            unused.setdefault(key(old), []).append(old)
+        old_keys = [key(p) for p in previous.paragraphs]
+        new_keys = [key(p) for p in self.paragraphs]
+        old_counts, new_counts = Counter(old_keys), Counter(new_keys)
+        unique = {text for text in old_counts if text and
+                  old_counts[text] == new_counts[text] == 1}
+        old_positions = {text: i for i, text in enumerate(old_keys) if text in unique}
+        matches = {i: old_positions[text] for i, text in enumerate(new_keys) if text in unique}
 
-        kept = 0
-        for new in self.paragraphs:
-            candidates = unused.get(key(new))
-            if not candidates:
-                continue
-            old = candidates.pop(0)
+        # Unique paragraphs anchor the sequence. Only identical regions between
+        # ordered anchors can safely preserve repeated dialogue. An insertion or
+        # deletion in such a region leaves its duplicates unlabelled.
+        anchors = [(-1, -1)]
+        for block in SequenceMatcher(None, old_keys, new_keys, autojunk=False).get_matching_blocks():
+            anchors.extend((block.a + offset, block.b + offset)
+                           for offset in range(block.size)
+                           if old_keys[block.a + offset] in unique)
+        anchors.append((len(old_keys), len(new_keys)))
+        for (old_left, new_left), (old_right, new_right) in zip(anchors, anchors[1:]):
+            old_region = old_keys[old_left + 1:old_right]
+            new_region = new_keys[new_left + 1:new_right]
+            if old_region == new_region:
+                for offset, text in enumerate(new_region, 1):
+                    if text:
+                        matches[new_left + offset] = old_left + offset
+
+        for new_index, old_index in matches.items():
+            new, old = self.paragraphs[new_index], previous.paragraphs[old_index]
             for field in INHERITED_PARAGRAPH_FIELDS:
                 setattr(new, field, getattr(old, field))
-            kept += 1
-        return kept
+        return len(matches)
 
 
 class ChapterSummary(BaseModel):

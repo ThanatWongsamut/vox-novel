@@ -65,6 +65,32 @@ class TestInheritAttribution(unittest.TestCase):
         new.inherit_attribution(old)
         self.assertEqual([p.speaker for p in new.paragraphs], ["First", "Second"])
 
+    def test_removing_an_exchange_keeps_the_remaining_speakers_context(self):
+        old = chapter("Alice nodded", "Yes", "Bob answered", "Yes")
+        for p, name in ((old.paragraphs[1], "Alice"), (old.paragraphs[3], "Bob")):
+            p.speaker, p.speaker_verified = name, True
+        new = chapter("Bob answered", "Yes")
+        new.inherit_attribution(old)
+        self.assertEqual(new.paragraphs[1].speaker, "Bob")
+        self.assertTrue(new.paragraphs[1].speaker_verified)
+
+    def test_inserted_identical_line_does_not_inherit_a_verified_label(self):
+        old = chapter("context", "Yes", "end")
+        old.paragraphs[1].speaker, old.paragraphs[1].speaker_verified = "Alice", True
+        new = chapter("context", "Yes", "Yes", "end")
+        new.inherit_attribution(old)
+        for p in new.paragraphs[1:3]:
+            self.assertIsNone(p.speaker)
+            self.assertFalse(p.speaker_verified)
+
+    def test_repeated_lines_without_matching_context_remain_unreviewed(self):
+        old = chapter("Yes", "Yes")
+        old.paragraphs[0].speaker, old.paragraphs[0].speaker_verified = "Alice", True
+        new = chapter("Yes")
+        new.inherit_attribution(old)
+        self.assertIsNone(new.paragraphs[0].speaker)
+        self.assertFalse(new.paragraphs[0].speaker_verified)
+
     def test_nothing_to_inherit_from(self):
         self.assertEqual(chapter("a").inherit_attribution(None), 0)
 

@@ -37,7 +37,8 @@ extension popup on any ReadToon series or chapter page.
 Every ReadToon fetch on the series page -- **Fetch Chapter**, **Re-Fetch**,
 **Fetch Next** -- goes through the extension when it is installed, and through
 VoxNovel's own headless browser otherwise. Re-fetching keeps the speaker labels
-on every paragraph whose text is unchanged, including ones you verified.
+on unchanged paragraphs, including ones you verified. Repeated text needs an
+unchanged surrounding sequence; ambiguous lines need review again.
 
 The extension asks VoxNovel which chapters are missing, then loads each one in
 a single background tab, waits for the text, imports it, and moves on after 3
@@ -58,6 +59,9 @@ unattended after a restart.
 
 When a job is done its tab closes -- unless you have since used that tab for
 something else. A cancelled job leaves its tab open.
+Pause, Skip and Cancel invalidate pending chapter reads. Cancel also aborts a
+pending import request, though an import already accepted by the server can
+still finish.
 
 **Check ReadToon's terms** before running a batch over a whole novel -- they
 may restrict automated copying even of chapters you have bought.
