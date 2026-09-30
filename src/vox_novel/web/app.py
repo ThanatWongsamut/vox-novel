@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -10,7 +11,7 @@ from typing import Dict, List, Optional
 from urllib.parse import quote
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -29,6 +30,8 @@ from vox_novel.storage.file import (
     validate_path_segment,
 )
 from vox_novel.storage.knowledge import KnowledgeManager
+
+logger = logging.getLogger(__name__)
 
 web_app = FastAPI(title="VoxNovel Web UI")
 
@@ -284,6 +287,87 @@ async def extension_health():
     return {"status": "ok", "app": "vox-novel", "version": "1.0.0"}
 
 
+# The only pages a batch job may open. The extension re-checks every URL it is
+# given; this keeps a malformed catalog entry from reaching it at all.
+READTOON_CHAPTER_URL = re.compile(
+    r"^https://(?:[a-z0-9-]+\.)?readtoon\.com/content/[^/?#]+/\d+(?:\.\d+)?/?$"
+)
+
+
+@web_app.get("/api/extension/plan")
+async def extension_plan(
+    series_id: str,
+    start: Optional[float] = Query(None, alias="from"),
+    end: Optional[float] = Query(None, alias="to"),
+    refresh: bool = False,
+    include_imported: bool = False,
+):
+    """The chapters a batch import should load: in range and not yet stored.
+
+    With include_imported, chapters already stored are planned too -- a
+    re-fetch. Speaker labels on them survive: the import carries them over
+    wherever a paragraph's text is unchanged.
+
+    The server can read ReadToon's chapter list without a browser -- it is the
+    chapter text that needs one -- so the plan is made here and the extension
+    only loads pages. The catalog is fetched when missing, when asked to, or
+    when the range reaches past the last chapter we know of.
+    """
+    series_id = safe_id(series_id, "series_id")
+    if start is not None and end is not None and end < start:
+        raise HTTPException(status_code=400, detail="'to' must not be before 'from'")
+
+    novel = storage.get_novel(series_id)
+    if novel is not None and novel.source != "readtoon":
+        raise HTTPException(status_code=400, detail="Batch import supports ReadToon series only")
+
+    known_last = max(
+        (c.chapter_number for c in (novel.chapters if novel else []) if c.chapter_number is not None),
+        default=None,
+    )
+    stale = end is not None and (known_last is None or end > known_last)
+    if novel is None or refresh or stale:
+        try:
+            novel = await pipeline.scrape_novel(f"https://readtoon.com/content/{series_id}")
+        except Exception as e:
+            if novel is None:
+                raise HTTPException(
+                    status_code=502, detail=f"Could not fetch the ReadToon chapter list: {e}"
+                )
+            # A stale catalog still plans every chapter it knows about.
+            logger.warning("Catalog refresh failed for %s; using the stored one: %s", series_id, e)
+
+    imported = storage.get_translated_chapter_ids(series_id, target_lang="th")
+    chapters, in_range, already = [], 0, 0
+    for ch in sorted(novel.chapters, key=lambda c: (c.chapter_number is None, c.chapter_number or 0)):
+        number = ch.chapter_number
+        if number is None:
+            continue
+        if (start is not None and number < start) or (end is not None and number > end):
+            continue
+        in_range += 1
+        if ch.id in imported:
+            already += 1
+            if not include_imported:
+                continue
+        if not READTOON_CHAPTER_URL.match(ch.url or ""):
+            logger.warning("Skipping chapter %s of %s: unexpected URL %r", ch.id, series_id, ch.url)
+            continue
+        chapters.append({
+            "no": number, "id": ch.id, "url": ch.url,
+            "title": ch.title, "is_locked": ch.is_locked,
+            "imported": ch.id in imported,
+        })
+
+    return {
+        "series_id": series_id,
+        "series_title": novel.title,
+        "chapters": chapters,
+        "in_range": in_range,
+        "already_imported": already,
+    }
+
+
 @web_app.post("/api/extension/import")
 async def extension_import(req: ExtensionImportRequest):
     """Direct 1-click chapter ingestion endpoint for the Chrome Extension."""
@@ -390,6 +474,11 @@ async def extension_import(req: ExtensionImportRequest):
         metadata={"source": req.source},
     )
 
+    # A re-import must not throw away speaker labels made since, above all the
+    # ones a human verified.
+    previous = await asyncio.to_thread(storage.get_chapter, series_id, chap_id)
+    attribution_kept = chapter.inherit_attribution(previous)
+
     await asyncio.to_thread(storage.save_chapter, chapter, True)
 
     # Update or create Novel
@@ -412,6 +501,11 @@ async def extension_import(req: ExtensionImportRequest):
                 and len(novel.chapters[existing_idx].title) > len(chapter.title)
             ):
                 summary_item.title = novel.chapters[existing_idx].title
+            # What the catalog knows and an import does not: whether ReadToon
+            # sells the chapter, and whether audio exists. Replacing the entry
+            # wholesale relabelled every imported paid chapter as free.
+            summary_item.is_locked = novel.chapters[existing_idx].is_locked
+            summary_item.has_audio = novel.chapters[existing_idx].has_audio
             novel.chapters[existing_idx] = summary_item
         else:
             novel.chapters.append(summary_item)
@@ -445,6 +539,7 @@ async def extension_import(req: ExtensionImportRequest):
         "read_url": f"/series/{series_id}/read/{chapter.id}",
         "series_url": f"/series/{series_id}",
         "paragraph_count": len(para_objs),
+        "attribution_kept": attribution_kept,
     }
 
 

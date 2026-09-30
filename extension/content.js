@@ -202,17 +202,8 @@
     const serverUrl = await getServerUrl();
 
     try {
-      const payload = {
-        url: details.url,
-        series_id: details.seriesId,
-        series_title: details.seriesTitle,
-        chapter_no: details.chapterNo,
-        chapter_title: details.chapterTitle,
-        paragraphs: details.paragraphs,
-        cover_url: details.coverUrl,
-        source: "readtoon",
-        source_language: "th",
-      };
+      // Shared with the batch driver, so both importers send the same thing.
+      const payload = VoxCore.buildImportPayload(details);
 
       const res = await fetch(`${serverUrl}/api/extension/import`, {
         method: "POST",
@@ -301,9 +292,69 @@
     document.body.appendChild(btn);
   }
 
-  // Handle messages from popup
+  // Anything that marks a Cloudflare challenge rather than the chapter.
+  const CHALLENGE_SELECTOR = [
+    'iframe[src*="challenges.cloudflare.com"]',
+    ".cf-turnstile",
+    "#challenge-form",
+    "#cf-challenge-running",
+  ].join(", ");
+
+  function pageSignals(timedOut) {
+    const details = extractPageDetails();
+    const bodyText = (document.body && document.body.innerText) || "";
+    return {
+      details,
+      signals: {
+        paragraphCount: details.paragraphs.length,
+        characterCount: details.characterCount,
+        bodyText: bodyText.slice(0, 20000),
+        challengeVisible:
+          !!document.querySelector(CHALLENGE_SELECTOR) || /just a moment/i.test(document.title),
+        timedOut,
+      },
+    };
+  }
+
+  /**
+   * Wait for the chapter to render, then report what the page is showing.
+   *
+   * ReadToon renders the text client-side, so the page can be "loaded" with
+   * the chapter still arriving. Text is only accepted once it has stopped
+   * changing between two looks, so a half-rendered chapter is never imported.
+   */
+  async function extractWhenReady(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let lastCount = -1;
+    for (;;) {
+      const timedOut = Date.now() >= deadline;
+      const { details, signals } = pageSignals(timedOut);
+      const status = VoxCore.classifyPage(signals);
+
+      if (status === "ok") {
+        if (details.characterCount === lastCount || timedOut) {
+          return { ok: true, status, details };
+        }
+        lastCount = details.characterCount;
+      } else if (status !== "pending") {
+        return { ok: true, status, details: { url: details.url } };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  // Handle messages from the popup and the batch driver
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      // Only the extension itself talks to this script.
+      if (sender.id !== chrome.runtime.id) return;
+      if (request.action === "EXTRACT_WHEN_READY") {
+        const timeoutMs = Number(request.timeoutMs) || VoxCore.EXTRACT_TIMEOUT_MS;
+        extractWhenReady(timeoutMs).then(sendResponse, (err) =>
+          sendResponse({ ok: false, error: String((err && err.message) || err) })
+        );
+        return true; // async
+      }
       if (request.action === "GET_PAGE_STATUS") {
         const details = extractPageDetails();
         sendResponse({ ok: true, details });

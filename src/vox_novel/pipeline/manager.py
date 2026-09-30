@@ -88,6 +88,8 @@ class NovelPipeline:
                 cb_res = progress_callback(100, "Content already in Thai. Ingested directly!")
                 if inspect.isawaitable(cb_res):
                     await cb_res
+            # A re-fetch must not throw away speaker labels made since.
+            chapter.inherit_attribution(self.storage.get_chapter(chapter.book_id, chapter.id))
             self.storage.save_chapter(chapter)
             return chapter
 
@@ -139,6 +141,9 @@ class NovelPipeline:
             else:
                 chapter = await translator.translate_chapter(chapter, target_lang=target_lang)
 
+        # Keeps labels only where the translation came out identical; a changed
+        # paragraph keeps nothing, since a label was made on the old wording.
+        chapter.inherit_attribution(self.storage.get_chapter(chapter.book_id, chapter.id))
         self.storage.save_chapter(chapter)
         return chapter
 

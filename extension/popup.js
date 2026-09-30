@@ -109,6 +109,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) return;
 
+  setupBatch(tab);
+
   // Communicate with content script
   try {
     chrome.tabs.sendMessage(tab.id, { action: "GET_PAGE_STATUS" }, (response) => {
@@ -189,3 +191,105 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 });
+
+// ------------------------------------------------------------ batch import --
+
+function sendJobCommand(command, payload) {
+  return chrome.runtime.sendMessage({ channel: "voxJob", command, payload: payload || {} });
+}
+
+function describeSkipped(skipped) {
+  if (!skipped || !skipped.length) return "";
+  const list = skipped.map((s) => `${s.no} (${s.reason})`).join(", ");
+  return ` Skipped: ${list}.`;
+}
+
+function setupBatch(tab) {
+  const card = document.getElementById("batch-card");
+  const startPane = document.getElementById("batch-start");
+  const runningPane = document.getElementById("batch-running");
+  const statusEl = document.getElementById("batch-status");
+  const barFill = document.getElementById("batch-bar-fill");
+  const pauseEl = document.getElementById("batch-pause");
+  const errorEl = document.getElementById("batch-error");
+  const startBtn = document.getElementById("batch-start-btn");
+  const pauseBtn = document.getElementById("batch-pause-btn");
+  const resumeBtn = document.getElementById("batch-resume-btn");
+  const skipBtn = document.getElementById("batch-skip-btn");
+  const cancelBtn = document.getElementById("batch-cancel-btn");
+  const dismissBtn = document.getElementById("batch-dismiss-btn");
+
+  const seriesId = VoxCore.readtoonSeriesId(tab.url);
+
+  function showError(message) {
+    errorEl.textContent = message || "";
+    errorEl.hidden = !message;
+  }
+
+  function render(job) {
+    const active = !!job && (job.status === "running" || job.status === "paused");
+    // Offer a new job only on a ReadToon page; always show one that is running.
+    card.hidden = !active && !seriesId && !job;
+    startPane.hidden = !!active || !seriesId;
+    runningPane.hidden = !job;
+    // With no job, offer a new one on a ReadToon page, else show nothing.
+    if (!job) {
+      card.hidden = !seriesId;
+      startPane.hidden = !seriesId;
+      return;
+    }
+    const done = job.imported + job.skipped.length;
+    barFill.style.width = job.total ? `${Math.round((done / job.total) * 100)}%` : "100%";
+
+    if (job.status === "done") {
+      statusEl.textContent =
+        `${job.seriesTitle}: finished. Imported ${job.imported} of ${job.total}.` + describeSkipped(job.skipped);
+    } else if (job.status === "cancelled") {
+      statusEl.textContent = `${job.seriesTitle}: cancelled after ${job.imported} imported.`;
+    } else {
+      const ch = job.current;
+      statusEl.textContent =
+        `${job.seriesTitle}: chapter ${ch ? ch.no : "?"} (${job.position} of ${job.total}), ` +
+        `${job.imported} imported.` + describeSkipped(job.skipped);
+    }
+
+    pauseEl.hidden = !job.pause;
+    pauseEl.textContent = job.pause ? job.pause.message : "";
+
+    pauseBtn.hidden = job.status !== "running";
+    resumeBtn.hidden = job.status !== "paused";
+    skipBtn.hidden = job.status !== "paused";
+    cancelBtn.hidden = !active;
+    dismissBtn.hidden = active;
+  }
+
+  async function run(command, payload) {
+    showError("");
+    try {
+      const reply = await sendJobCommand(command, payload);
+      if (!reply || !reply.ok) throw new Error((reply && reply.error) || "No response.");
+      render(reply.job);
+    } catch (e) {
+      showError(String(e.message || e));
+    }
+  }
+
+  startBtn.addEventListener("click", () => {
+    const from = document.getElementById("batch-from").value;
+    const to = document.getElementById("batch-to").value;
+    startBtn.disabled = true;
+    run("start", { seriesId, from, to }).finally(() => (startBtn.disabled = false));
+  });
+  pauseBtn.addEventListener("click", () => run("pause"));
+  resumeBtn.addEventListener("click", () => run("resume"));
+  skipBtn.addEventListener("click", () => run("skip"));
+  cancelBtn.addEventListener("click", () => run("cancel"));
+  dismissBtn.addEventListener("click", () => run("clear"));
+
+  // Live progress while the popup is open.
+  const port = chrome.runtime.connect({ name: "voxJob" });
+  port.onMessage.addListener((message) => {
+    if (message && message.type === "job") render(message.job);
+  });
+  render(null);
+}

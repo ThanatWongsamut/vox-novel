@@ -32,7 +32,15 @@
             <a href="/series/{{ novel.id }}/glossary" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium rounded-lg transition flex items-center gap-1.5">
                 <i class="fa-solid fa-brain text-purple-400"></i> Series Glossary
             </a>
-            {% if next_untranslated %}
+            {% if next_untranslated and novel.source == 'readtoon' %}
+            <button onclick="fetchReadtoonChapter(this)"
+                    data-url="{{ next_untranslated.url }}" data-title="{{ next_untranslated.title }}"
+                    data-no="{{ next_untranslated.chapter_number if next_untranslated.chapter_number is not none else '' }}"
+                    data-imported="false"
+                    class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5">
+                <i class="fa-solid fa-bolt"></i> Fetch Next (Ch.{{ next_untranslated.chapter_number|int if next_untranslated.chapter_number is not none else '' }})
+            </button>
+            {% elif next_untranslated %}
             <button onclick="startTranslation('{{ novel.id }}', '{{ next_untranslated.url }}', 'Chapter {{ next_untranslated.chapter_number|int if next_untranslated.chapter_number is not none else '' }}')" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5">
                 <i class="fa-solid fa-bolt"></i> Translate Next (Ch.{{ next_untranslated.chapter_number|int if next_untranslated.chapter_number is not none else '' }})
             </button>
@@ -56,6 +64,51 @@
                 <p class="text-xs text-slate-400 leading-relaxed max-h-24 overflow-y-auto pr-2">{{ novel.synopsis or 'No synopsis.' }}</p>
             </div>
         </div>
+
+        {% if novel.source == 'readtoon' %}
+        <!-- Batch import through the VoxNovel browser extension. Shown only once
+             the extension announces itself on this page. -->
+        <div id="vox-batch" class="hidden bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 shadow-xl">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-layer-group text-purple-400"></i> Import from ReadToon
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">
+                        Loads each chapter in a background tab of this browser, using your ReadToon login.
+                        It stops and asks you whenever ReadToon needs you.
+                    </p>
+                </div>
+                <div id="vox-batch-start" class="flex items-center gap-2 text-xs text-slate-300">
+                    <span>Chapters</span>
+                    <input id="vox-from" type="number" min="0" step="any" placeholder="first" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-purple-500">
+                    <span>to</span>
+                    <input id="vox-to" type="number" min="0" step="any" placeholder="last" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-purple-500">
+                    <button id="vox-start-btn" onclick="voxBatch.startRange()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition">
+                        Import missing chapters
+                    </button>
+                </div>
+            </div>
+
+            <div id="vox-batch-progress" class="hidden mt-3 space-y-2">
+                <div id="vox-batch-status" class="text-xs text-slate-200"></div>
+                <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
+                    <div id="vox-batch-bar" class="bg-gradient-to-r from-indigo-500 to-purple-500 h-1.5 transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div id="vox-batch-pause" class="hidden text-[11px] text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2"></div>
+                <div class="flex items-center gap-2 text-xs">
+                    <button id="vox-pause-btn" onclick="voxBatch.command('pause')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">Pause</button>
+                    <button id="vox-resume-btn" onclick="voxBatch.command('resume')" class="hidden px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition">Continue</button>
+                    <button id="vox-skip-btn" onclick="voxBatch.command('skip')" class="hidden px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">Skip chapter</button>
+                    <button id="vox-cancel-btn" onclick="voxBatch.command('cancel')" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg transition">Cancel</button>
+                    <button id="vox-dismiss-btn" onclick="voxBatch.dismiss()" class="hidden px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg transition">Dismiss</button>
+                    <button id="vox-refresh-btn" onclick="voxBatch.finish()" class="hidden px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition">Refresh chapter list</button>
+                </div>
+            </div>
+
+            <div id="vox-batch-error" class="hidden text-xs text-red-400 mt-2"></div>
+        </div>
+        {% endif %}
 
         <!-- Chapters Table -->
         <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl overflow-hidden shadow-xl">
@@ -120,11 +173,21 @@
                                 </a>
                                 {% endif %}
                                 {% if novel.source == 'readtoon' and ch.is_locked and not is_trans %}
-                                <a href="{{ ch.url }}" target="_blank" title="Open chapter in Chrome and click [🎙️ Import to VoxNovel]" class="px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded transition text-[11px] inline-flex items-center gap-1 shadow-sm">
+                                <a href="{{ ch.url }}" target="_blank" title="Open chapter in Chrome and click [🎙️ Import to VoxNovel]" class="vox-no-ext px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded transition text-[11px] inline-flex items-center gap-1 shadow-sm">
                                     <i class="fa-solid fa-arrow-up-right-from-square"></i> Open & Import
                                 </a>
                                 {% endif %}
+                                {% if novel.source == 'readtoon' %}
+                                {# One way to fetch a ReadToon chapter: through the extension when it is
+                                   installed, the server's headless browser otherwise. #}
+                                <button onclick="fetchReadtoonChapter(this)"
+                                        data-url="{{ ch.url }}" data-title="{{ ch.title }}"
+                                        data-no="{{ ch.chapter_number if ch.chapter_number is not none else '' }}"
+                                        data-imported="{{ 'true' if is_trans else 'false' }}"
+                                        class="vox-fetch-btn px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded transition text-[11px] inline-flex items-center gap-1">
+                                {% else %}
                                 <button onclick="startTranslation('{{ novel.id }}', '{{ ch.url }}', '{{ ch.title }}')" class="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded transition text-[11px] inline-flex items-center gap-1">
+                                {% endif %}
                                     <i class="fa-solid {% if novel.source == 'readtoon' %}fa-cloud-arrow-down{% else %}fa-language{% endif %}"></i>
                                     {% if novel.source == 'readtoon' %}
                                         {{ 'Re-Fetch' if is_trans else 'Fetch Chapter' }}
@@ -387,5 +450,191 @@
             };
         }
     </script>
+
+    {% if novel.source == 'readtoon' %}
+    <script>
+        // Talks to the VoxNovel extension through its relay script. The page can
+        // only name a series and a range: the extension asks this server for the
+        // chapter list itself and refuses any URL that is not a ReadToon chapter.
+        const voxBatch = (() => {
+            const SERIES_ID = {{ novel.id | tojson }};
+            // The oldest extension this page works with. Chrome keeps running the
+            // extension it last loaded, so after an update the page and the extension
+            // can disagree -- an older one ignored re-fetch and reported "0 of 0".
+            // Bump alongside extension/manifest.json when the page needs something new.
+            const REQUIRED_EXTENSION = "1.2.0";
+            const FROM_PAGE = "voxnovel-page";
+            const FROM_EXTENSION = "voxnovel-extension";
+            const pending = new Map();
+            let nextRequest = 0;
+            let installed = false;
+
+            const $ = (id) => document.getElementById(id);
+            const show = (el, visible) => el && el.classList.toggle("hidden", !visible);
+
+            window.addEventListener("message", (event) => {
+                if (event.source !== window || event.origin !== window.location.origin) return;
+                const data = event.data;
+                if (!data || data.source !== FROM_EXTENSION) return;
+                if (data.type === "ready") detect();
+                else if (data.type === "job") render(data.job);
+                else if (data.type === "gone") showError("The VoxNovel extension was reloaded. Refresh this page.");
+                else if (data.type === "reply" && pending.has(data.requestId)) {
+                    pending.get(data.requestId)(data);
+                    pending.delete(data.requestId);
+                }
+            });
+
+            function send(command, payload) {
+                return new Promise((resolve) => {
+                    const requestId = ++nextRequest;
+                    pending.set(requestId, resolve);
+                    window.postMessage({ source: FROM_PAGE, command, payload, requestId }, window.location.origin);
+                    // Starting can include refreshing the chapter list from ReadToon.
+                    setTimeout(() => {
+                        if (!pending.has(requestId)) return;
+                        pending.delete(requestId);
+                        resolve({ ok: false, error: "The extension did not answer." });
+                    }, 60000);
+                });
+            }
+
+            const watch = () => window.postMessage({ source: FROM_PAGE, command: "watch" }, window.location.origin);
+
+            function showError(message) {
+                $("vox-batch-error").textContent = message || "";
+                show($("vox-batch-error"), !!message);
+            }
+
+            function render(job) {
+                const active = !!job && (job.status === "running" || job.status === "paused");
+                show($("vox-batch-start"), !active);
+                show($("vox-batch-progress"), !!job);
+                // One job at a time: the per-chapter buttons wait for this one.
+                document.querySelectorAll("button.vox-fetch-btn").forEach((b) => (b.disabled = active));
+                if (!job) return;
+
+                const done = job.imported + job.skipped.length;
+                $("vox-batch-bar").style.width = job.total ? `${Math.round((done / job.total) * 100)}%` : "100%";
+                const skipped = job.skipped.length
+                    ? ` Skipped: ${job.skipped.map((s) => `${s.no} (${s.reason})`).join(", ")}.`
+                    : "";
+                const other = job.seriesId !== SERIES_ID ? ` [${job.seriesTitle}]` : "";
+                let status;
+                if (job.status === "done" && job.total === 0) {
+                    status = job.alreadyImported
+                        ? "Nothing to import: every chapter in that range is already in VoxNovel."
+                        : "Nothing to import: no chapters in that range.";
+                } else if (job.status === "done") {
+                    status = `Finished: imported ${job.imported} of ${job.total}.${skipped}`;
+                } else if (job.status === "cancelled") {
+                    status = `Cancelled after importing ${job.imported}.`;
+                } else {
+                    const ch = job.current;
+                    status = `Chapter ${ch ? ch.no : "?"} (${job.position} of ${job.total}), ${job.imported} imported.${skipped}`;
+                }
+                $("vox-batch-status").textContent = status + other;
+
+                show($("vox-batch-pause"), !!job.pause);
+                $("vox-batch-pause").textContent = job.pause ? job.pause.message : "";
+                show($("vox-pause-btn"), job.status === "running");
+                show($("vox-resume-btn"), job.status === "paused");
+                show($("vox-skip-btn"), job.status === "paused");
+                show($("vox-cancel-btn"), active);
+                show($("vox-refresh-btn"), !active && job.imported > 0 && job.seriesId === SERIES_ID);
+                show($("vox-dismiss-btn"), !active);
+            }
+
+            async function command(name, payload) {
+                showError("");
+                const reply = await send(name, payload);
+                if (!reply.ok) {
+                    showError(reply.error || "The extension refused the request.");
+                    return;
+                }
+                render(reply.job);
+                if (reply.job && (reply.job.status === "running" || reply.job.status === "paused")) watch();
+            }
+
+            function start(from, to) {
+                return command("start", { seriesId: SERIES_ID, from, to });
+            }
+
+            function olderThan(version, required) {
+                const a = String(version).split(".").map(Number);
+                const b = required.split(".").map(Number);
+                for (let i = 0; i < b.length; i++) {
+                    if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
+                }
+                return false;
+            }
+
+            async function detect() {
+                const version = document.documentElement.dataset.voxnovelExtension;
+                if (installed || !version) return;
+                show($("vox-batch"), true);
+                if (olderThan(version, REQUIRED_EXTENSION)) {
+                    // Left uninstalled, so fetches fall back to the server rather
+                    // than go through an extension that would get them wrong.
+                    show($("vox-batch-start"), false);
+                    showError(`The VoxNovel extension is out of date (${version}; this page needs ${REQUIRED_EXTENSION}). ` +
+                              "Reload it in chrome://extensions, then refresh this page.");
+                    return;
+                }
+                installed = true;
+                document.querySelectorAll(".vox-no-ext").forEach((el) => show(el, false));
+                // Pick up a job still in progress, e.g. after reloading the page. A
+                // finished one is not shown again: its result has already been seen,
+                // and a stale "Finished" panel reads as if nothing was refreshed.
+                const reply = await send("status");
+                const job = reply.ok ? reply.job : null;
+                if (job && (job.status === "running" || job.status === "paused")) {
+                    render(job);
+                    watch();
+                }
+            }
+
+            // The relay marks the page before any page script runs, but may
+            // announce itself before this listener exists -- so look as well.
+            if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", detect);
+            else detect();
+
+            // Clear a finished job's result from the extension, then hide the panel.
+            async function dismiss() {
+                await send("clear");
+                show($("vox-batch-progress"), false);
+                show($("vox-batch-start"), true);
+                document.querySelectorAll("button.vox-fetch-btn").forEach((b) => (b.disabled = false));
+            }
+
+            return {
+                command,
+                dismiss,
+                // Refresh chapter list: the result has been seen, so clear it first.
+                finish: () => dismiss().then(() => location.reload()),
+                installed: () => installed,
+                // One chapter -- also a re-fetch, which planning otherwise leaves out.
+                fetchOne: (no, imported) =>
+                    command("start", { seriesId: SERIES_ID, from: no, to: no, includeImported: imported }),
+                startRange: () => start($("vox-from").value, $("vox-to").value),
+            };
+        })();
+
+        // Every ReadToon fetch on this page -- Fetch Chapter, Re-Fetch, Fetch Next --
+        // goes through here, so there is one way to get a chapter. The extension
+        // reads it in the user's own Chrome, which passes ReadToon's checks and
+        // holds their purchases; the server's headless browser is the fallback
+        // when the extension is not installed.
+        function fetchReadtoonChapter(button) {
+            const no = button.dataset.no === "" ? null : Number(button.dataset.no);
+            if (voxBatch.installed() && no !== null) {
+                voxBatch.fetchOne(no, button.dataset.imported === "true");
+                document.getElementById("vox-batch").scrollIntoView({ behavior: "smooth", block: "nearest" });
+                return;
+            }
+            startTranslation({{ novel.id | tojson }}, button.dataset.url, button.dataset.title);
+        }
+    </script>
+    {% endif %}
 </body>
 </html>
